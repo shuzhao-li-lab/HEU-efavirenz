@@ -1,0 +1,2029 @@
+---
+title: "01_HEU_HUU_metabolomics"
+format: html
+editor: visual
+---
+
+## Notebook Setup
+
+```{r}
+
+#| label: setup
+#| warning: false
+
+setwd("/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript/")
+
+this_date <- Sys.Date()
+
+output_dir <- glue::glue("/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript/{this_date}_processed_data/")
+dir.create(output_dir)
+
+results_dir <- glue::glue("/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript/{this_date}_results/")
+dir.create(results_dir)
+
+met_data_dir <- ("/Volumes/T7/Li Lab/Projects/HEU/OLD/2025-12-14_HEU_Metabolomics_V3/heu_data/")
+
+library(tidyverse)
+library(matrixTests)
+library(ggrepel)
+library(ComplexHeatmap)
+library(showtext)
+
+font_add("Arial", "/System/Library/Fonts/Supplemental/Arial.ttf")
+showtext_opts(dpi = 300)
+showtext_auto(enable = TRUE)
+```
+
+## Process Metabolomics Data
+
+### Processing the data
+
+```{r}
+
+modes <- c("HILIC_neg", "HILIC_pos", "RP_neg", "RP_pos") 
+
+for(m in modes){
+  
+  cat(m, "data processing beginning...")
+  
+  this_met_output_dir <- glue::glue("{output_dir}{results_date}_{m}/")
+  dir.create(this_met_output_dir)
+  
+  ion_mode <- ifelse(grepl("pos", m), "pos", "neg")
+  
+  ft_tbl_path <- glue::glue("{met_data_dir}/12_03_2025_feature_tables/{m}_final_table.tsv")
+
+  ft_tbl <- readr::read_tsv(ft_tbl_path)
+  
+  if(m == "RP_neg"){
+    
+    ft_tbl_path_full <- glue::glue("{met_data_dir}/12_03_2025_final_feature_tables/{m}_final_table.tsv")
+    
+    ft_tbl_final <- readr::read_tsv(ft_tbl_path_full)
+    
+    efa_ft <- "F29911"
+    hyroxy_ft <- "F21642"
+    
+    if(!efa_ft %in% ft_tbl$id_number){
+      
+      ft_tbl <- dplyr::bind_rows(ft_tbl,
+                                 ft_tbl_final[ft_tbl_final$id_number == efa_ft,])
+      
+    }
+    
+    if(!hyroxy_ft %in% ft_tbl$id_number){
+      
+      ft_tbl <- dplyr::bind_rows(ft_tbl,
+                                 ft_tbl_final[ft_tbl_final$id_number == hyroxy_ft,])
+      
+    }
+    
+  }
+  
+  ## format annotations
+  annot_tbl_path <- glue::glue("{met_data_dir}12_03_2025_annotations/{m}_deduped.tsv")
+  
+  annot_tbl <- readr::read_delim(annot_tbl_path, delim = ",")
+  
+  # # get kipus with stable isotopes from JSON
+  kp_path <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{m}_empirical_compounds.csv")
+  
+  kp_df <- read.csv(kp_path) %>%
+    group_by(kp_id) %>%
+    mutate(
+      has_stable_isotope = case_when(ion_mode == "pos" ~  max(grepl("13C/12C,M+H+", ion_relation, fixed = TRUE)),
+                                     ion_mode == "neg" ~ max(grepl("13C/12C,M-H-", ion_relation, fixed = TRUE))),
+
+      has_M0 = case_when(ion_mode == "pos" ~ max(grepl("M0,M+H+", ion_relation, fixed = TRUE)),
+                         ion_mode == "neg" ~ max(grepl("M0,M-H-", ion_relation, fixed = TRUE)))
+    )
+
+  # confident C12s
+  kp_df_df_filt <- kp_df %>%
+    filter(has_stable_isotope & has_M0) %>%
+    filter(isotope == "M0")
+
+  if(ion_mode == "pos"){
+    kp_df_df_filt <- kp_df_df_filt %>%
+      filter(ion_relation == "M0,M+H+")
+  }else{
+    kp_df_df_filt <- kp_df_df_filt %>%
+      filter(ion_relation == "M0,M-H-")
+  }
+  
+  # add efavirenz
+  efz_fts <- annot_tbl %>%
+    filter(grepl("efavirenz", tolower(annotation)))
+  
+  kp_df_df_filt <- kp_df_df_filt %>%
+    dplyr::bind_rows(.,
+                     kp_df %>%
+    filter(id %in% efz_fts$id_number)) %>%
+    dplyr::left_join(., annot_tbl,
+                     by = join_by(id == id_number)) %>%
+    # Could be duplicates
+    distinct()
+  
+  cat(nrow(kp_df_df_filt), " khipus in", m)
+
+  write.csv(kp_df_df_filt,
+          glue::glue("{this_met_output_dir}{m}_kp_df_anot.csv"))
+
+  meta_data_path <- glue::glue("{met_data_dir}12_03_2025_mapping_files/sample_mapping_{m}_HEU_all_plasma.json")
+
+  meta_json <- readLines(meta_data_path, warn = FALSE)
+  meta_json <- gsub("\\bNaN\\b", "null", meta_json)  # replace NaN with null
+  meta_json <- jsonlite::fromJSON(paste(meta_json, collapse = "\n"))
+
+  meta_df <- tibble(sample_name = names(meta_json),
+                    inner = meta_json) %>%
+    unnest_wider(inner) %>%
+    mutate(origin = ifelse(grepl("B", Sample_ID), "Cord", "Maternal"),
+           viral_load__M = unlist(lapply(viral_load__M, function(y) if (is.null(y)) NA else y), use.names = TRUE))
+
+  pref_ft_tbl_sliced <- ft_tbl %>%
+    dplyr::select(c(1, 12:ncol(ft_tbl))) %>%
+    pivot_longer(-1) %>%
+    pivot_wider(names_from = 1, values_from = value) %>%
+    tibble::column_to_rownames(var = names(.)[1]) %>%
+    as.data.frame()
+
+  # drop rows not in sample_metadata
+  filtered_df_tbl <- pref_ft_tbl_sliced[rownames(pref_ft_tbl_sliced) %in% meta_df$sample_name, ]
+
+  smpl.inx <- match(meta_df$sample_name, rownames(filtered_df_tbl))
+
+  filtered_df_tbl <- filtered_df_tbl[smpl.inx,]
+
+  filtered_df_tbl_t <- data.table::transpose(filtered_df_tbl)
+  rownames(filtered_df_tbl_t) <- colnames(filtered_df_tbl)
+  colnames(filtered_df_tbl_t) <- rownames(filtered_df_tbl)
+
+  # perform log transformation - already done in pcpfm
+  #log_ft_tbl <- log(filtered_df_tbl_t + 1)
+
+  # keep features that are high-confidence?
+  #log_ft_tbl_m0 <- log_ft_tbl[rownames(log_ft_tbl) %in% kp_df_df_filt$id, ]
+
+  # rows features
+  # columns samples
+  write.csv(filtered_df_tbl_t,
+            glue::glue("{this_met_output_dir}{m}_log_feature_table.csv"),
+            row.names = TRUE,
+            quote = TRUE,
+            col.names = NA)
+
+  write.csv(meta_df, glue::glue("{this_met_output_dir}{m}_metadata.csv"))
+
+  write.csv(annot_tbl %>%
+              filter(id_number %in% rownames(filtered_df_tbl_t)) %>%
+              select(-'...1'), 
+            glue::glue("{this_met_output_dir}{m}_annotations.csv"))
+  
+  cat(m, "data processing finished!")
+    
+}
+
+```
+
+## General Analysis
+
+### Functions for analysis
+
+```{r}
+
+plot_boxplot_series <- function(top_volcano_ft,
+                                n_top = 5,
+                                this_ft_tbl,
+                                these_samples,
+                                kp_df,
+                                m,
+                                who,
+                                bp_dir,
+                                analysis = "volcano",
+                                this_feat = NA,
+                                series_name = NA,
+                                nrow_facet = 1,
+                                width = 7,
+                                height = 2.5){
+
+  if(analysis == "volcano"){
+    
+    # care about efavirenz and top n features based on p-values
+    top_features <- top_volcano_ft %>%
+    dplyr::left_join(., kp_df %>%
+                       select(-annotation),
+                     by = join_by(feature_id == id)) %>%
+    # focus on high-confidence features
+    dplyr::filter(!is.na(mz) | grepl("efavirenz", tolower(annotation))) %>%
+    mutate(plot_name = gsub("_.*", "", annotation),
+           plot_name = glue::glue("{stringr::str_trunc(plot_name, width = 20)}\n{round(mz, 4)}@{rtime}\n{m}")) %>%
+    slice_head(n = n_top)
+    
+    print(head(top_features))
+    
+  }else if(analysis == "single"){
+    
+    # plot for single feature
+    top_features <- top_volcano_ft %>%
+      dplyr::filter(feature_id %in% this_feat) %>%
+      dplyr::left_join(., kp_df %>%
+                       select(-annotation),
+                     by = join_by(feature_id == id)) %>%
+    mutate(plot_name = gsub("_.*", "", annotation),
+           plot_name = glue::glue("{stringr::str_trunc(plot_name, width = 20)}\n{round(mz, 4)}@{rtime}\n{m}")) 
+    
+  }else if(analysis == "series"){
+    
+    top_features <- top_volcano_ft %>%
+    dplyr::left_join(., kp_df %>%
+                       select(-annotation) %>%
+                       tibble::rownames_to_column(., "feature_id")) %>%
+    mutate(plot_name = gsub("_.*", "", annotation),
+           plot_name = glue::glue("{stringr::str_trunc(plot_name, width = 20)}\n{round(mz, 4)}@{rtime}\n{m}")) %>%
+    slice_head(n = n_top)
+    
+    print(head(top_features))
+    
+  }
+  
+  top_ft_df <- this_ft_tbl %>%
+    as.data.frame() %>%
+    select(all_of(top_features$feature_id)) %>%
+    tibble::rownames_to_column(.) %>%
+    dplyr::rename(sample_name = rowname) %>%
+    filter(sample_name %in% these_samples$sample_name) %>%
+    dplyr::left_join(., these_samples %>%
+                       select(sample_name, status)) %>%
+    mutate(status = factor(status, levels = c("HUU", "HEU"))) %>%
+    pivot_longer(., cols = all_of(top_features$feature_id), names_to = "feature_id") %>%
+    dplyr::left_join(., top_features %>%
+                       select(feature_id, plot_name)) %>%
+    mutate(plot_name = factor(plot_name,
+                              levels = unique(top_features$plot_name)))
+  
+  p <- ggplot(top_ft_df, 
+              aes(x = status, 
+                  y = value)) +
+    geom_boxplot(alpha = 0.85,
+                 outlier.shape = NA,
+                 aes(fill = status)) +
+    geom_jitter(aes(fill = status),
+                width = 0.15, 
+                alpha = 0.6, 
+                size = 1.75,
+                shape = 21, 
+                stroke = 0.5,
+                color = "black") +
+    scale_fill_manual(values = c("HUU" = "#1A85FF", 
+                                 "HEU" = "#D41159"),
+                      guide = "none") +
+    theme_classic() +
+    labs(x = "HIV Exposure Status",
+         y = "Relative Intensity") +
+    theme(
+      text = element_text(family = "Arial"),
+      strip.background = element_blank(),
+      panel.spacing = unit(0.5, "lines"))
+  
+  if(analysis %in% c("volcano")){
+    p <- p + 
+      facet_wrap(. ~ plot_name, nrow = nrow_facet, scales = "free_y") +
+      theme(
+        axis.text = element_text(size = 9),
+      axis.title.x = element_text(size = 9, margin = margin(t = 2.5)), # reduce space above x-axis title
+      axis.title.y = element_text(size = 9, margin = margin(r = 2.5)), # reduce space right of y-axis title
+      plot.title = element_text(size = 9.5, hjust = 0.5),
+      strip.text = element_text(size = 8, margin = margin(b = 1, t = 1)),
+      ) +
+    ggtitle(glue::glue("{m}: HUU vs HEU {who} Plasma"))
+    
+    ggsave(glue::glue("{bp_dir}{Sys.Date()}_{m}_{who}_box_plot.png"),
+         width = width,
+         height = height)
+    
+  }else if(analysis %in% c("series")){
+    p <- p + 
+      facet_wrap(. ~ plot_name, nrow = nrow_facet, scales = "free_y") +
+      theme(
+        axis.text = element_text(size = 9),
+      axis.title.x = element_text(size = 9, margin = margin(t = 2.5)), # reduce space above x-axis title
+      axis.title.y = element_text(size = 9, margin = margin(r = 2.5)), # reduce space right of y-axis title
+      plot.title = element_text(size = 9, hjust = 0.5),
+      strip.text = element_text(size = 8, margin = margin(b = 1, t = 1)),
+      ) +
+    ggtitle(glue::glue("{series_name}\n{m}: HUU vs HEU {who} Plasma"))
+    
+    ggsave(glue::glue("{bp_dir}{Sys.Date()}_{m}_{who}_{series_name}_box_plot.png"),
+         width = width,
+         height = height)
+    
+  }else{
+    
+    p <- p + 
+      theme(
+        axis.text = element_text(size = 6),
+      axis.title.x = element_text(size = 6, margin = margin(t = 2.5)), # reduce space above x-axis title
+      axis.title.y = element_text(size = 6, margin = margin(r = 2.5)), # reduce space right of y-axis title
+      plot.title = element_text(size = 6.5, hjust = 0.5),
+      strip.text = element_text(size = 5, margin = margin(b = 1, t = 1)),
+      ) +
+    ggtitle(top_ft_df$plot_name)
+    
+    ggsave(glue::glue("{bp_dir}{Sys.Date()}_{m}_{who}_{janitor::make_clean_names(top_features$annotation)}_{this_feat}_box_plot.png"),
+         width = 1.5,
+         height = 2,
+         dpi = 300)
+  }
+}
+
+plot_heatmap <- function(paired_ttest_res,
+                         this_ft_tbl,
+                         this_metadata,
+                         m,
+                         heatmap_dir){
+  
+  sig_fts <- paired_ttest_res %>%
+    tibble::rownames_to_column(., "feature_id") %>%
+    filter(p.adjusted <= 0.05) %>%
+    pull(feature_id)
+  
+  sig_fts_cleaned <- gsub("_delta", "", sig_fts)
+  
+  ft_tbl_scaled <- this_ft_tbl %>%
+    as.data.frame() %>%
+    select(all_of(sig_fts_cleaned)) %>%
+    scale() %>%
+    as.matrix() %>%
+    t()
+  
+  col_annots <- this_metadata %>%
+    select(status,
+           sex__B,
+           origin,
+           Batch_no) %>%
+    mutate(
+      sex__B = ifelse(origin == "Maternal", "Maternal", sex__B),
+      cord_sex = ifelse(sex__B == "Male", "Cord M", 
+                        ifelse(sex__B == "Female", "Cord F", sex__B))
+    )
+  
+  column_ha <- HeatmapAnnotation(Batch = col_annots$Batch_no,
+                                 Origin = col_annots$cord_sex,
+                                 Status = col_annots$status,
+                                 col = list(
+                                   Origin = c("Cord F" = "#CC79A7", 
+                                              "Cord M" = "#56B4E9", 
+                                              "Maternal" = "#F0E442"),
+                                   Status = c("HUU" = "#1A85FF", 
+                                              "HEU" = "#D41159")
+                                 ),
+                                 # annotation track titles
+                                 annotation_name_gp = gpar(fontfamily = "Arial", 
+                                                           fontsize = 14, 
+                                                           fontface = "plain"),
+                                 # annotation legends
+                                 annotation_legend_param = list(
+                                   Batch  = list(ncol = 1, 
+                                                 title_gp = gpar(fontfamily = "Arial", 
+                                                                 fontsize = 14, 
+                                                                 fontface = "plain"),
+                                                 labels_gp = gpar(fontfamily = "Arial", 
+                                                                  fontsize = 14, 
+                                                                  fontface = "plain")),
+                                   Origin = list(ncol = 1, 
+                                                 title_gp = gpar(fontfamily = "Arial", 
+                                                                 fontsize = 14, 
+                                                                 fontface = "plain"),
+                                                 labels_gp = gpar(fontfamily = "Arial", 
+                                                                  fontsize = 14, 
+                                                                  fontface = "plain")),
+                                   Status = list(ncol = 1, 
+                                                 title_gp = gpar(fontfamily = "Arial", 
+                                                                 fontsize = 14, 
+                                                                 fontface = "plain"),
+                                                 labels_gp = gpar(fontfamily = "Arial", 
+                                                                  fontsize = 14, 
+                                                                  fontface = "plain"))))
+  
+  ht <- Heatmap(ft_tbl_scaled, 
+                column_title = glue::glue("Clustermap q < 0.05 (BH) {m}"),
+                column_title_gp = gpar(fontfamily = "Arial", 
+                                       fontsize = 16, 
+                                       fontface = "plain"),
+                use_raster = FALSE,
+                show_row_names = FALSE,
+                show_column_names = FALSE,
+                top_annotation = column_ha,
+                name = "Z-Score (Feature)",
+                # main heatmap legend
+                heatmap_legend_param = list(
+                  title_gp = gpar(fontfamily = "Arial", 
+                                  fontsize = 14, 
+                                  fontface = "plain"),
+                  labels_gp = gpar(fontfamily = "Arial", 
+                                   fontsize = 14,
+                                   fontface = "plain")
+                ))  
+  
+  pdf(glue::glue("{heatmap_dir}{Sys.Date()}_{m}_all_samples_heatmap.pdf"), 
+      width = 8, 
+      height = 6)
+  
+  showtext_begin()
+  draw(ht)        
+  showtext_end()
+  
+  dev.off() 
+  
+}
+
+plot_pca <- function(m,
+                     this_ft_tbl,
+                     this_metadata,
+                     pca_dir){
+  
+  pc <- stats::prcomp(na.omit(this_ft_tbl),
+                      center = TRUE,
+                      scale = TRUE)
+  
+  pc$percentVar <- pc$sdev^2/sum(pc$sdev^2)
+  
+  pca_res <- as.data.frame(pc$x)
+  pca_res$origin <- as.factor(this_metadata$origin)
+  pca_res$status <- as.factor(this_metadata$status)
+  pca_res$group <- as.factor(this_metadata$plot_group)
+  
+  p <- ggplot2::ggplot(data = pca_res,
+                       ggplot2::aes(x = PC1,
+                                    y = PC2,
+                                    color = status)) +
+    ggplot2::geom_jitter(aes(shape = origin),
+                         size = 5,
+                         alpha = 0.75) +
+    ggplot2::theme_classic() +
+    scale_color_manual(values = c("HUU" = "#1A85FF", 
+                                  "HEU" = "#D41159")) +
+    ggplot2::scale_shape_manual(values = c(16, 15)) +
+    ggplot2::labs(x = glue::glue("PC1: ", round(pc$percentVar[1]*100,1), "%"),
+                  y = glue::glue("PC2: ", round(pc$percentVar[2]*100,1), "%")) +
+    ggplot2::theme(text = ggplot2::element_text(size = 12,
+                                                family = "Arial"),
+                   axis.text = ggplot2::element_text(size = 12),
+                   axis.title = ggplot2::element_text(size = 14),
+                   panel.grid = element_blank()) +
+    stat_ellipse(aes(group = group)) +
+    #tune::coord_obs_pred() +
+    labs(shape = "Origin",
+         color = "HIV Status",
+         title = glue::glue("PCA of {m}"))
+  
+  ggplot2::ggsave(glue::glue("{pca_dir}{Sys.Date()}_{m}_pca_plot.png"),
+                  width = 6,
+                  height = 4.5)
+  
+}
+
+# paired t-tests
+
+run_paired_ttests <- function(m,
+                              this_ft_tbl,
+                              this_metadata,
+                              output_dir){
+  
+  all_features <- colnames(this_ft_tbl)
+  
+  this_ft_tbl_df <- this_ft_tbl %>%
+    as.data.frame() %>%
+    mutate(sample_name = rownames(this_ft_tbl))
+  
+  all_data_df <- dplyr::left_join(this_metadata %>%
+                                    select(sample_name, Sample_ID, status, origin),
+                                  this_ft_tbl_df)
+  
+  all_data_df_delta <- all_data_df %>%
+    mutate(dyad_id = gsub("_.*", "", Sample_ID)) %>%
+    group_by(dyad_id) %>%
+    mutate(n = n()) %>%
+    filter(n == 2) %>%
+    arrange(Sample_ID, origin) %>%
+    mutate(across(all_of(all_features), ~ (.x[1] - .x[2]), .names = "{.col}_delta")) %>%
+    select(-c(all_of(all_features))) %>%
+    distinct()
+  
+  tt_df <- all_data_df_delta %>%
+    select(dyad_id, status, all_of(paste0(all_features, "_delta"))) %>%
+    distinct() %>%
+    ungroup()
+  
+  tt_df_huu <- tt_df %>%
+    dplyr::filter(status == "HUU") %>%
+    select(all_of(paste0(all_features, "_delta")))
+  
+  tt_df_heu <- tt_df %>%
+    dplyr::filter(status == "HEU") %>%
+    select(all_of(paste0(all_features, "_delta")))
+  
+  tt_res <- matrixTests::col_t_welch(tt_df_huu, 
+                                     tt_df_heu) 
+  
+  tt_res <- tt_res %>%
+    filter(!obs.x == 0) %>%
+    mutate(p.adjusted = p.adjust(pvalue, method = "BH"))
+  
+  write.csv(tt_res,
+            glue::glue("{output_dir}{Sys.Date()}_{m}_paired_ttest_results_delta_dyad.csv"))
+  
+
+  return(tt_res)
+  
+}
+
+#' Perform t-test
+#' per feature between two given groups.
+#'
+#' @param peak_table Data frame with samples as rows and features as columns.
+#' @param metadata Data frame with each row containing
+#' metadata for each sample.
+#' @param group1 Character, exact name of the first group.
+#' @param group2 Character, exact name of the second group.
+#' @param prefix Character, prefix to append results.
+#' @param output_dir File path to save results.
+#' @import matrixTests
+#' @export
+perform_ttest <- function(peak_table = NULL,
+                          metadata = NULL,
+                          group_var = NA,
+                          group1 = "",
+                          group2 = "",
+                          prefix = "",
+                          output_dir = "",
+                          type = "default"){
+
+  if(missing(peak_table) | missing(metadata) | missing(group_var) | missing(group1) | missing(group2)){
+    cli::cli_abort("Missing peak table and/or metadata and/or grouping variable!")
+  }
+
+  g1inx <- which(metadata[[group_var]] == group1)
+  g2inx <- which(metadata[[group_var]] == group2)
+
+  if(!group_var %in% colnames(metadata)){
+    cli::cli_abort("Grouping variable not found in metadata!")
+  }
+
+  peak1 <- peak_table[,g1inx, drop = FALSE]
+  peak2 <- peak_table[,g2inx, drop = FALSE]
+
+  if(any(ncol(peak1) == 0 | ncol(peak2) == 0)){
+    cli::cli_abort("Invalid group sizes! At least 1 group has no corresponding samples!")
+  }
+
+  if(ncol(peak1) == 1){
+    peak1 <- peak1 %>% as.data.frame() %>% dplyr::bind_cols((.))
+  }
+
+  if(ncol(peak2) == 1){
+    peak2 <- peak2 %>% as.data.frame() %>% dplyr::bind_cols((.))
+  }
+
+  if(type == "default"){
+    # perform two-sample t-test
+    tt_res <- matrixTests::row_t_welch(peak1, peak2)
+  }else if(type == "paired"){
+    tt_res <- matrixTests::row_t_paired(peak1, peak2)
+  }
+
+  tt_res$pvalue_adjusted <- p.adjust(tt_res$pvalue, "BH")
+
+  write.csv(tt_res,
+            glue::glue("{output_dir}{prefix}_ttest_results.csv"))
+
+  return(tt_res)
+
+}
+
+# Assumes peak table is already log fold-changed!
+perform_foldchange <- function(peak_table = pk_tbl,
+                               metadata = meta_tbl,
+                               group_var = "group_ko_time",
+                               group1 = group1,
+                               group2 = group2,
+                               prefix = glue::glue("{this_mode}_{group1}_{group2}"),
+                               output_dir = results_dir){
+  
+  g1inx <- which(metadata[[group_var]] == group1)
+  g2inx <- which(metadata[[group_var]] == group2)
+  
+  features <- rownames(peak_table)
+  
+  fc_res <- lapply(features, function(x){
+    
+    feats_g1 <- peak_table[which(rownames(peak_table) == x), g1inx, drop = FALSE] %>% unlist()
+    feats_g2 <- peak_table[which(rownames(peak_table) == x), g2inx, drop = FALSE] %>% unlist()
+    
+    mean_g1 <- mean(feats_g1, na.rm = TRUE)
+    mean_g2 <- mean(feats_g2, na.rm = TRUE)
+    log2fc <- mean_g2 - mean_g1 
+    
+    res <- data.frame(log2fc = log2fc)
+    rownames(res) <- x
+    
+    res
+    
+  })
+  
+  fc_res <- fc_res %>%
+    bind_rows()
+  
+  write.csv(fc_res,
+            glue::glue("{output_dir}{prefix}_foldchange_results.csv"))
+  
+  return(fc_res)
+  
+}
+
+plot_volcano <- function(m,
+                         tt_res = tt_df,
+                         pval_thresh = 0.05,
+                         fc_res = fc_df,
+                         fc_thresh = 1.5,
+                         prefix = glue::glue("{Sys.Date()}_{group1}_{group2}_{who}"),
+                         output_dir = results_dir,
+                         pvalue_type = "adjusted",
+                         width = 6,
+                         height = 5,
+                         labels = TRUE,
+                         anot_df = this_annots,
+                         highlight_metabolites = TRUE,
+                         metabolite_pattern = NA){
+  
+  all_res_df <- tt_df %>%
+    mutate(tibble::rownames_to_column(., "feature_id")) %>%
+    dplyr::left_join(fc_df %>%
+                       mutate(tibble::rownames_to_column(., "feature_id"))) %>%
+    mutate(
+      important = ifelse(pvalue_adjusted < pval_thresh & log2fc > log2(fc_thresh), "TT + FC Up",
+                         ifelse(pvalue_adjusted < pval_thresh & log2fc < -log2(fc_thresh), "TT + FC Down", "No Change")),
+      important = ifelse((pvalue_adjusted < pval_thresh & important == "No Change"), "TT Only", important),
+      important = factor(important))
+  
+  if(highlight_metabolites){
+    all_res_df <- all_res_df %>%
+      dplyr::left_join(., anot_df) %>%
+      mutate(
+        highlighted_met = ifelse(grepl(metabolite_pattern, tolower(annotation)), annotation, NA),
+        markers_plot = ifelse(important != "No Change", highlighted_met, NA)
+      )
+  }else{
+    all_res_df <- all_res_df %>%
+      mutate(markers_plot = NA)
+  }
+
+  n_imp <- all_res_df %>%
+    filter(important != "No Change") %>%
+    count() %>%
+    unlist()
+  
+  cat(glue::glue("{n_imp} significant features!"))
+  
+  color_pal <- c("red", "blue", "#D8BB64", "grey")
+  names(color_pal) <- c("TT + FC Up", "TT + FC Down", "TT Only", "No Change")
+  
+  max_x <- max(abs(all_res_df$log2fc), na.rm = TRUE)
+  
+  if(max_x < 0.5){
+    max_x <- 0.5
+  } else{
+    max_x <- ceiling(max_x)
+  }
+  
+  p <- ggplot(all_res_df, 
+              aes(x = log2fc, 
+                  y = -log10(pvalue_adjusted),
+                  color = important,
+                  label = markers_plot)) +
+    geom_point(size = 2,
+               alpha = 0.75) +
+    geom_hline(yintercept = -log10(pval_thresh), linetype = "dashed", color = "grey40") +
+    geom_vline(xintercept = c(-log2(fc_thresh), log2(fc_thresh)), linetype = "dashed", color = "grey40") +
+    theme_classic() +
+    scale_color_manual(values = color_pal) +
+    labs(
+      x = "Log2 Fold Change",
+      y = "-Log10 (BH adjusted TT p-value)",
+      color = "Significance"
+    ) +
+    theme(
+      text = element_text(family = "Arial"),
+      axis.text = element_text(size = 11),
+      axis.title = element_text(size = 12),
+      legend.title = element_text(size = 11),
+      legend.text = element_text(size = 10),
+      strip.text = element_text(size = 11),
+      panel.grid = element_blank()) +
+    coord_cartesian(xlim = c(-max_x, max_x)) +
+    ggtitle(glue::glue("{m} HUU vs HEU {who} - BH < {pval_thresh}")) +
+  geom_text_repel(
+    na.rm = TRUE,
+    size = 3,
+    color = "black",
+    box.padding = 0.3,
+    point.padding = 0.5,
+    max.overlaps = Inf,
+    min.segment.length = 0.1
+  )
+  
+  ggsave(glue::glue("{volcano_dir}{prefix}_volcano_plot.png"),
+         width = 5,
+         height = 4)
+  
+  write.csv(all_res_df, glue::glue("{volcano_dir}{prefix}_volcano_df.csv"))
+  
+  supp_table <- all_res_df %>%
+    rename(
+      n_HUU = obs.x,
+      n_HEU = obs.y,
+      mean_HUU = mean.x,
+      mean_HEU = mean.y,
+      Log2FC = log2fc,
+      TT_pvalue = pvalue,
+      TT_adjpvalue = pvalue_adjusted
+    ) %>%
+    mutate(mean_HUU = signif(mean_HUU, 2),
+           mean_HEU = signif(mean_HEU, 2),
+           Log2FC = signif(Log2FC, 2),
+           TT_pvalue = signif(TT_pvalue, 2),
+           TT_adjpvalue = signif(TT_adjpvalue, 2)) %>%
+    select(feature_id, n_HUU, n_HEU, mean_HUU, mean_HEU, 
+           Log2FC, TT_pvalue, TT_adjpvalue) %>%
+    arrange(TT_adjpvalue)
+  
+  write.csv(supp_table, glue::glue("{volcano_dir}{prefix}_supp_volcano_table_df.csv"))
+  
+}
+```
+
+### Analyze metabolomics data
+
+```{r}
+
+modes <- c("HILIC_neg", "HILIC_pos", "RP_neg", "RP_pos") 
+
+figure1_dir <- glue::glue("{results_dir}figure1/")
+dir.create(figure1_dir)
+
+pca_dir <- glue::glue("{figure1_dir}pca/")
+dir.create(pca_dir)
+
+ttest_dir <- glue::glue("{figure1_dir}ttest/")
+dir.create(ttest_dir)
+
+fc_dir <- glue::glue("{figure1_dir}fc/")
+dir.create(fc_dir)
+
+volcano_dir <- glue::glue("{figure1_dir}volcano/")
+dir.create(volcano_dir)
+
+heatmap_dir <- glue::glue("{figure1_dir}heatmap/")
+dir.create(heatmap_dir)
+
+bp_dir <- glue::glue("{figure1_dir}boxplots/")
+dir.create(bp_dir)
+
+group1 <- "HUU"
+group2 <- "HEU"
+group_var = "status"
+
+results_date = "2025-12-16"
+
+for(m in modes){
+  
+  this_met_output_dir <- glue::glue("{output_dir}{results_date}_{m}/")
+  
+  this_ft_tbl <- list.files(this_met_output_dir,
+                            pattern = "feature_table",
+                            full.names = TRUE) %>%
+    read.csv(., row.names = 1) %>%
+    t()
+  
+  this_metadata <- list.files(this_met_output_dir,
+                              pattern = "metadata",
+                              full.names = TRUE) %>%
+    read.csv(., row.names = 1) %>%
+    mutate(who = ifelse(origin == "Maternal", "Maternal", "Cord"),
+           plot_group = paste0(who, "_", status))
+  
+  this_annots <- list.files(this_met_output_dir,
+                            pattern = "annotations",
+                            full.names = TRUE) %>%
+    read.csv(., row.names = 1) %>%
+    rename(feature_id = id_number)
+  
+  kp_path <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{this_m}_empirical_compounds.csv")
+    
+  kp_df <- read.csv(kp_path) %>%
+    mutate(annotation = NA)
+  
+  # M0 only
+  #kp_df <- glue::glue("{this_met_output_dir}{m}_kp_df_anot.csv") %>%
+  #  read.csv(., row.names = 1)
+  
+  # right now samples are rows
+  # feature + metadata are columns
+  
+  # 1. PCA
+  plot_pca(m,
+           this_ft_tbl,
+           this_metadata,
+           pca_dir)
+  
+  # 2. Paired t-tests
+  # Deltas Mother - Baby | HUU vs HEU
+  # Heatmap
+  
+  paired_ttest_res <- run_paired_ttests(m,
+                                        this_ft_tbl,
+                                        this_metadata,
+                                        ttest_dir)
+  
+  plot_heatmap(paired_ttest_res,
+             this_ft_tbl,
+             this_metadata,
+             m,
+             heatmap_dir)
+  
+  # 3. Unpaired t-tests
+  # 4. Fold-change
+  # 5. Volcano
+  # 6. Box plots
+  
+  for(who in c("Maternal", "Cord")){
+    
+    who_inx <- which(this_metadata$origin == who)
+    
+    who_ft_tbl <- this_ft_tbl[who_inx,] %>% t()
+    
+    who_meta <- this_metadata[who_inx,] 
+    
+    tt_df <- perform_ttest(peak_table = who_ft_tbl,
+                           metadata = who_meta,
+                           group_var = group_var,
+                           group1 = group1,
+                           group2 = group2,
+                           prefix = glue::glue("{Sys.Date()}_{m}_{group1}_{group2}_{who}"),
+                           output_dir = ttest_dir)
+    
+    fc_df <- perform_foldchange(peak_table = who_ft_tbl,
+                                metadata = who_meta,
+                                group_var = group_var,
+                                group1 = group1,
+                                group2 = group2,
+                                prefix = glue::glue("{Sys.Date()}_{m}_{group1}_{group2}_{who}"),
+                                output_dir = fc_dir)
+    
+    plot_volcano(m = m,
+                 tt_res = tt_df,
+                 pval_thresh = 0.05,
+                 fc_res = fc_df,
+                 fc_thresh = 1,
+                 prefix = glue::glue("{Sys.Date()}_{m}_{group1}_{group2}_{who}"),
+                 output_dir = volcano_dir,
+                 pvalue_type = "adjusted",
+                 width = 6,
+                 height = 5,
+                 anot_df = this_annots,
+                 highlight_metabolites = TRUE,
+                 metabolite_pattern = "efavirenz")
+    
+    volcano_df <- read.csv(glue::glue("{volcano_dir}{Sys.Date()}_{m}_{group1}_{group2}_{who}_volcano_df.csv")) 
+    
+    top_volcano <- volcano_df %>%
+      filter(important != "No Change" & !is.na(annotation))
+    
+    top_volcano_ft <- top_volcano %>%
+      filter(feature_id %in% colnames(this_ft_tbl)) %>%
+      arrange(pvalue_adjusted) %>%
+      group_by(annotation) %>%
+      slice_head(n = 1) %>%
+      ungroup() %>%
+      arrange(pvalue_adjusted) %>%
+      mutate(anot_level = gsub(".*_", "", annotation),
+             keep = ifelse((anot_level %in% c("L1", "L2", "CSM") | !is.na(highlighted_met)), TRUE, FALSE)) %>%
+      filter(keep)
+    
+    if(nrow(top_volcano_ft) > 20){
+      top_volcano_ft <- top_volcano_ft[1:20,]
+    }
+    
+    for(j in 1:nrow(top_volcano_ft)){
+      
+      this_top_volcano_ft <- top_volcano_ft[j,]$feature_id
+      
+      plot_boxplot_series(top_volcano_ft,
+                        n_top = 5,
+                        this_ft_tbl,
+                        who_meta,
+                        kp_df,
+                        m,
+                        who,
+                        bp_dir,
+                        analysis = "single",
+                        this_feat = this_top_volcano_ft)
+    }
+    
+    }
+}
+
+```
+
+### Significantly different metabolites in HUU/HEU
+
+```{r}
+
+figure2_dir <- glue::glue("{results_dir}figure2/")
+dir.create(figure2_dir)
+
+# function to plot series
+
+plot_series <- function(steroid_substrates_anots,
+                        output_dir,
+                        this_date,
+                        met_data_dir,
+                        cyp2b6_dir,
+                        series_name){
+
+  for(this_m in steroid_substrates_anots$mode %>% unique()){
+    
+    cat(this_m)
+    
+    this_met_output_dir <- glue::glue("{output_dir}{results_date}_{this_m}/")
+    
+    cat(this_met_output_dir)
+    
+    this_ft_tbl <- list.files(this_met_output_dir,
+                              pattern = "feature_table",
+                              full.names = TRUE) %>%
+      read.csv(., row.names = 1) %>%
+      t()
+    
+    this_metadata <- list.files(this_met_output_dir,
+                                pattern = "metadata",
+                                full.names = TRUE) %>%
+      read.csv(., row.names = 1) %>%
+      mutate(who = ifelse(origin == "Maternal", "Maternal", "Cord"),
+             plot_group = paste0(who, "_", status))
+    
+    kp_path <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{this_m}_empirical_compounds.csv")
+    
+    kp_df <- read.csv(kp_path) %>%
+      mutate(annotation = NA)
+    # 
+    # kp_df <- glue::glue("{this_met_output_dir}{this_m}_kp_df_anot.csv") %>%
+    #   read.csv(., row.names = 1)
+    
+    rownames(kp_df) <- kp_df$id
+    
+    print(head(kp_df))
+    
+    these_steroids <- steroid_substrates_anots %>%
+      filter(mode == this_m)
+    
+    for(this_who in unique(these_steroids$origin)){
+      
+      cat(this_who)
+      
+      these_feats = these_steroids %>%
+        filter(origin == this_who) 
+      
+      who_inx <- which(this_metadata$origin == this_who)
+      
+      who_ft_tbl <- this_ft_tbl[who_inx,]
+      who_meta <- this_metadata[who_inx,] 
+      
+      n_feats = nrow(these_feats)
+      n_row = max(1, round(n_feats/5))
+      plot_height = 2.5 * n_row
+      plot_width = 1.4 * round(n_feats/n_row)
+      
+      plot_boxplot_series(these_feats,
+                          n_top = n_feats,
+                          who_ft_tbl,
+                          who_meta,
+                          kp_df,
+                          this_m,
+                          this_who,
+                          cyp2b6_dir,
+                          analysis = "series",
+                          series_name = series_name,
+                          nrow_facet = n_row,
+                          height = plot_height,
+                          width = plot_width)
+      
+      for(j in 1:nrow(these_feats)){
+      
+      this_top_ft <- these_feats[j,]$feature_id
+      
+      print(these_feats)
+      
+      plot_boxplot_series(these_feats,
+                        n_top = 5,
+                        who_ft_tbl,
+                        who_meta,
+                        kp_df,
+                        this_m,
+                        this_who,
+                        cyp2b6_dir,
+                        analysis = "single",
+                        this_feat = this_top_ft)
+    }
+    }
+    
+  }
+}
+
+volcano_results_list <- vector("list")
+
+volcano_results <- list.files(volcano_dir,
+                              pattern = "volcano_df",
+                              full.names = TRUE)
+
+for(m in modes){
+  
+  this_met_output_dir <- glue::glue("/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript/{results_date}_processed_data/{results_date}_{m}")
+  
+  this_annots <- list.files(this_met_output_dir,
+                            pattern = "annotations",
+                            full.names = TRUE) %>%
+    read.csv(., row.names = 1) %>%
+    rename(feature_id = id_number)
+  
+  cat(nrow(this_annots), m)
+  
+  this_m_volcano_results <- grep(m, volcano_results)
+  
+  for(i in this_m_volcano_results){
+    
+    volcano_res <- read.csv(volcano_results[i], row.names = 1) %>%
+      dplyr::left_join(., this_annots) %>%
+      arrange(pvalue) %>%
+      dplyr::filter(pvalue < 0.05) %>%
+      mutate(file = basename(volcano_results[i]))
+    
+    volcano_results_list[[basename(volcano_results[i])]] <- volcano_res
+    
+  }
+  
+}
+
+volcano_results_df <- volcano_results_list %>%
+  dplyr::bind_rows() %>%
+  dplyr::filter(pvalue_adjusted < 0.01) %>%  
+  mutate(mode = case_when(
+    grepl("RP_neg", file) ~ "RP_neg",
+    grepl("RP_pos", file) ~ "RP_pos",
+    grepl("HILIC_neg", file) ~ "HILIC_neg",
+    grepl("HILIC_pos", file) ~ "HILIC_pos"),
+    origin = ifelse(grepl("Cord", file), "Cord", "Maternal")
+  )
+
+```
+
+### Steroid Precursors
+
+```{r}
+
+steroid_precursors_dir <- glue::glue("{figure2_dir}steroid_precursors/")
+dir.create(steroid_precursors_dir)
+
+steroid_precursors <- c("cholesterol", "pregnenolone")
+
+steroid_precursors_anots <- volcano_results_df %>%
+  filter(grepl(paste0(steroid_precursors, collapse = "|"), tolower(annotation))) %>%
+  select(feature_id, 
+         annotation,
+         mode,
+         origin)
+
+plot_series(steroid_precursors_anots,
+            output_dir,
+            this_date,
+            met_data_dir,
+            steroid_precursors_dir,
+            series_name = "Steroid Precursors")
+
+```
+
+### Bile acids
+
+```{r}
+
+bile_dir <- glue::glue("{figure2_dir}bile_acids/")
+dir.create(bile_dir)
+
+cholic_anots <- volcano_results_df %>%
+  filter(grepl("cholic", tolower(annotation))) %>%
+  select(feature_id, 
+         annotation,
+         mode,
+         origin)
+
+plot_series(cholic_anots,
+            output_dir,
+            this_date,
+            met_data_dir,
+            bile_dir,
+            series_name = "Bile Acids")
+```
+
+### Tryptophan + Derivatives
+
+```{r}
+
+trp_dir <- glue::glue("{figure2_dir}tryptophan/")
+dir.create(trp_dir)
+
+trp_substrates <- c("tryptophan", "kynur", "serotonin")
+
+trp_substrates_anots <- volcano_results_df %>%
+  filter(grepl(paste0(trp_substrates, collapse = "|"), tolower(annotation))) %>%
+  select(feature_id, 
+         annotation,
+         mode,
+         origin)
+
+plot_series(trp_substrates_anots,
+            output_dir,
+            this_date,
+            met_data_dir,
+            trp_dir,
+            series_name = "Tryptophan")
+
+```
+
+### PUFAs
+
+```{r}
+
+pufa_dir <- glue::glue("{figure2_dir}pufas/")
+dir.create(pufa_dir)
+
+pufa_substrates <- c("linoleic", "linolenic", 
+                     "arachidonic", "aenoic", "adrenic")
+
+pufa_substrates_anots <- volcano_results_df %>%
+  filter(grepl(paste0(pufa_substrates, collapse = "|"), tolower(annotation))) %>%
+  select(feature_id, 
+         annotation,
+         mode,
+         origin)
+
+plot_series(pufa_substrates_anots,
+            output_dir,
+            this_date,
+            met_data_dir,
+            pufa_dir,
+            series_name = "PUFAs")
+```
+
+### Microbiome
+
+```{r}
+
+micro_dir <- glue::glue("{figure2_dir}microbiome/")
+dir.create(micro_dir)
+
+microbiome <- c(
+  "phenylacetyl", "phenol sulfate",
+  "cresol", "dopamine"
+)
+
+microbiome_anots <- volcano_results_df %>%
+  filter(grepl(paste0(microbiome, collapse = "|"), tolower(annotation))) %>%
+  select(feature_id, 
+         annotation,
+         mode,
+         origin)
+
+plot_series(microbiome_anots,
+            output_dir,
+            this_date,
+            met_data_dir,
+            micro_dir,
+            series_name = "Microbiome")
+```
+
+### CYP2B6
+
+```{r}
+
+cyp2b6_dir <- glue::glue("{figure2_dir}CYP2B6_substrates/")
+dir.create(cyp2b6_dir)
+
+steroid_substrates <- c("testerone", "estradiol",
+             "estrone", "cortisol", 
+             "corticosterone", "aldosterone", "androsterone")
+
+steroid_substrates_anots <- volcano_results_df %>%
+  filter(grepl(paste0(steroid_substrates, collapse = "|"), tolower(annotation))) %>%
+  select(feature_id, 
+         annotation,
+         mode,
+         origin)
+
+pufa_substrates <- c("linoleic", "arachidonic",
+                     "eicosapentaenoic")
+
+pufa_substrates_anots <- volcano_results_df %>%
+  filter(grepl(paste0(pufa_substrates, collapse = "|"), tolower(annotation))) %>%
+  select(feature_id, 
+         annotation,
+         mode,
+         origin)
+
+plot_series(steroid_substrates_anots,
+            output_dir,
+            this_date,
+            met_data_dir,
+            cyp2b6_dir,
+            series_name = "Steroids")
+
+plot_series(pufa_substrates_anots,
+            output_dir,
+            this_date,
+            met_data_dir,
+            cyp2b6_dir,
+            series_name = "PUFA")
+
+```
+
+### Sulfates
+
+```{r}
+
+sulf_dir <- glue::glue("{figure2_dir}sulfated_metabolites/")
+dir.create(sulf_dir)
+
+sulfate_substrates <- c("sulfate", "sulphate")
+
+sulfate_substrates_anots <- volcano_results_df %>%
+  filter(grepl(paste0(sulfate_substrates, collapse = "|"), tolower(annotation))) %>%
+  select(feature_id, 
+         annotation,
+         mode,
+         origin)
+
+# 1. Endogenous Steroids & Steroid-Derived
+steroids <- c(
+  "Estrone-3-sulfate_L2",
+  "Equilin sulfate_L4",
+  "5alpha-Pregnan-3beta,20alpha-diol disulfate_L4",
+  "Androstane-3,7-diol disulfate_CSM",
+  "Androstane-3,17-diol 17-sulfate_L4",
+  "Pregnenolone-3,21-disulfate_CSM",
+  "Pregnenolone sulfate_CSM",
+  "Dehydroepiandrosterone sulfate; LC-tDDA; CE30_L2",
+  "17-beta-estradiol 3-sulfate-17-(beta-D-glucuronide)_L4",
+  "Estriol 3-sulfate 16-glucuronide_L4",
+  "Estrone sulfate_CSM",
+  "Corticosterone sulfate_CSM",
+  "Cortisol 21-sulfate_L4",
+  "Cholesterol sulfate_CSM",
+  "Cholesterol sulfate_L4",
+  "24-methylene-cholesterol sulfate_L4",
+  "Vitamin D3 sulfate_L4",
+  "25-Hydroxyvitamin D3 3-sulfate ester_L4",
+  "24S-hydroxycholesterol 3-sulfate, 24-D-glucuronide_L4"
+)
+
+# 2. Bile Acids
+bile_acids <- c(
+  "Chenodeoxycholic acid sulfate_L4",
+  "Chenodeoxycholic acid 3-sulfate_CSM"
+)
+
+# 3. Neurotransmitters & Neuroactive Metabolites
+neuro <- c(
+  "HOMOVANILLIC ACID SULFATE_L2",
+  "Homovanillic acid sulfate_L4",
+  "Dopamine 3-O-sulfate_CSM",
+  "Epinephrine sulfate_L4",
+  "Serotonin sulfate_L4"
+)
+
+# 4. Microbiome-Derived Metabolites
+microbiome <- c(
+  "P-CRESOL SULFATE_L2",
+  "3-Indoxyl sulphate_L0",
+  "Indole-3-carboxilic acid-O-sulphate_L4",
+  "3-Hydroxyhippuric acid sulfate_L4",
+  "D-3-Phenyllactic acid sulfate_L2",
+  "5'-(3',4'-Dihydroxyphenyl)-gamma-valerolactone sulfate_L4"
+)
+
+# 5. Dietary Polyphenols / Flavonoids / Plant Metabolites
+polyphenols <- c(
+  "Isorhamnetin 3-glucuronide-7-sulfate_L4",
+  "Daidzein 4'-sulfate_L4",
+  "Vanillin-4-sulfate_L2",
+  "3-Methoxyphenol sulfate_L2",
+  "2-(4-Methoxyphenyl)ethyl hydrogen sulfate_L4",
+  "Tyrosol 4-sulfate_L4",
+  "Quercetin 3-sulfate-7-alpha-arabinopyranoside_L4",
+  "5'-(3',4'-Dihydroxyphenyl)-gamma-valerolactone sulfate_L4",
+  "Orientin 7-O-sulfate_L4",
+  "Luteolin 4'-sulfate_L4",
+  "8-Hydroxyluteolin 8-sulfate_L4",
+  "6-Hydroxyluteolin 6,3'-dimethyl ether 7-sulfate_L4",
+  "Apigenin 7-sulfate_L4",
+  "Isorhamnetin 3-sulfate_L4",
+  "Naringenin 5-sulfate_L4",
+  "cis-Resveratrol 3-sulfate_L4",
+  "Resveratrol 3-sulfate_CSM",
+  "Vanillic acid 4-O-sulfate_L4",
+  "3-Hydroxy-2-methyl-4-pyrone sulfate_L2",
+  "Zearalenone 4-sulfate_L4",
+  "Quercetin 7,3',4'-trimethyl ether 3-sulfate_L4",
+  "Enterolactone 3''-sulfate_CSM"
+)
+
+# 6. Glycosaminoglycans & Carbohydrate Sulfates
+glycans <- c(
+  "Chondroitin sulfates_CSM",
+  "Dermatan sulfate_L4",
+  "chondroitin sulfate E (GalNAc4,6diS-GlcA), precursor 5a_L4",
+  "N-Acetylgalactosamine 4-sulphate_CSM",
+  "n-Acetylgalactosamine-6-sulfate_CSM",
+  "Glucosamine 6-sulfate_L4"
+)
+
+# 7. Lipids & Sterol-like Compounds
+lipids <- c(
+  "beta-Sitosteryl sulfate_CSM",
+  "13-chloro-docosane-1,14-disulfate_L4"
+)
+
+for(set in c("lipids", "glycans", "polyphenols",
+             "microbiome", "neuro", "bile_acids",
+             "steroids")){
+  
+  print(set)
+  
+  plot_series(sulfate_substrates_anots %>%
+              filter(annotation %in% get(set)),
+            output_dir,
+            this_date,
+            met_data_dir,
+            sulf_dir,
+            series_name = janitor::make_clean_names(set, case = "sentence"))
+  
+}
+
+```
+
+### Sugars
+
+```{r}
+
+sugar_dir <- glue::glue("{figure2_dir}sugars/")
+dir.create(sugar_dir)
+
+sugars <- c("glucose", "lactose", "fucose",
+            "xylose")
+
+sugars_anots <- volcano_results_df %>%
+  filter(grepl(paste0(sugars, collapse = "|"), tolower(annotation))) %>%
+  select(feature_id, 
+         annotation,
+         mode,
+         origin)
+
+plot_series(sugars_anots,
+            output_dir,
+            this_date,
+            met_data_dir,
+            sugar_dir,
+            series_name = "Sugars")
+
+```
+
+### Heme
+
+```{r}
+
+heme_dir <- glue::glue("{figure2_dir}heme/")
+dir.create(heme_dir)
+
+heme <- c("biliverdin", "bilirubin", "stercobilin", "stercobilinogen",
+          "urobilinogen")
+
+heme_anots <- volcano_results_df %>%
+  filter(grepl(paste0(heme, collapse = "|"), tolower(annotation))) %>%
+  select(feature_id, 
+         annotation,
+         mode,
+         origin)
+
+plot_series(heme_anots,
+            output_dir,
+            this_date,
+            met_data_dir,
+            heme_dir,
+            series_name = "Heme")
+
+
+```
+
+### Glycans
+
+```{r}
+
+glycan_dir <- glue::glue("{figure2_dir}glycans/")
+dir.create(glycan_dir)
+
+glycans <- c("acetylneuraminic acid", "glucosamine", "galactosamine")
+
+glycans_anots <- volcano_results_df %>%
+  filter(grepl(paste0(glycans, collapse = "|"), tolower(annotation))) %>%
+  select(feature_id, 
+         annotation,
+         mode,
+         origin)
+
+plot_series(glycans_anots,
+            output_dir,
+            this_date,
+            met_data_dir,
+            glycan_dir,
+            series_name = "Glycans")
+
+
+```
+
+### Export tables
+
+```{r}
+
+volcano_results <- list.files(volcano_dir,
+                              pattern = "supp_volcano_table",
+                              full.names = TRUE)
+
+for(m in modes){
+  
+  this_met_output_dir <- glue::glue("{output_dir}{this_date}_{m}/")
+  
+  this_annots <- list.files(this_met_output_dir,
+                            pattern = "annotations",
+                            full.names = TRUE) %>%
+    read.csv(., row.names = 1) %>%
+    rename(feature_id = id_number)
+  
+  cat(nrow(this_annots), m)
+  
+  this_m_volcano_results <- grep(m, volcano_results)
+  
+  for(i in this_m_volcano_results){
+    
+    volcano_res <- read.csv(volcano_results[i], row.names = 1) %>%
+      dplyr::left_join(., this_annots) %>%
+      arrange(TT_adjpvalue) %>%
+      write.csv(glue::glue("/Volumes/T7/Li Lab/Projects/HEU/2025-12-04_HEU_Metabolomics_Manuscript_V3/volcano_results/{basename(volcano_results[i])}"))
+    
+  }
+  
+}
+
+volcano_results <- list.files(volcano_dir,
+                              pattern = "volcano_df",
+                              full.names = TRUE)
+
+for(m in modes){
+
+  this_m_volcano_results <- grep(m, volcano_results)
+  
+  all_kp <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{m}_empirical_compounds.csv") %>% 
+    read.csv(., row.names = 1)
+  
+  for(i in this_m_volcano_results){
+    
+    volcano_res <- read.csv(volcano_results[i], row.names = 1)
+    
+    cat(nrow(volcano_res), m)
+    
+    volcano_res_mummichog <- volcano_res %>%
+      select(feature_id, pvalue, statistic) %>%
+      dplyr::left_join(.,
+                       all_kp %>% tibble::rownames_to_column(., "feature_id")) %>%
+      dplyr::select(mz, rtime, pvalue,
+             statistic, feature_id) %>%
+      dplyr::rename('m/z' = "mz",
+                    'retention time' = "rtime",
+                    "p-value" = "pvalue") %>%
+      write_tsv(., 
+                glue::glue("~/Desktop/JAX_Python/HEU_mummichog/{tools::file_path_sans_ext(basename(volcano_results[i]))}_mummichog_input.tsv"))
+      
+  }
+  
+}
+
+```
+
+## Efavirenz focus
+
+### Efavirenz and metabolites boxplots and correlation
+
+```{r}
+
+efa_dir <- glue::glue("{figure2_dir}efavirenz/")
+dir.create(efa_dir)
+
+m = "RP_neg"
+
+this_met_output_dir <- glue::glue("/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript/{results_date}_processed_data/{results_date}_{m}/")
+
+this_ft_tbl <- list.files(this_met_output_dir,
+                          pattern = "feature_table",
+                          full.names = TRUE) %>%
+  read.csv(., row.names = 1) %>%
+  t()
+
+this_metadata <- list.files(this_met_output_dir,
+                            pattern = "metadata",
+                            full.names = TRUE) %>%
+  read.csv(., row.names = 1) %>%
+  mutate(who = ifelse(origin == "Maternal", "Maternal", "Cord"),
+         plot_group = paste0(who, "_", status))
+
+this_annots <- list.files(this_met_output_dir,
+                          pattern = "annotations",
+                          full.names = TRUE) %>%
+  read.csv(., row.names = 1) %>%
+  rename(feature_id = id_number)
+
+kp_df <- glue::glue("{this_met_output_dir}{m}_kp_df_anot.csv") %>%
+  read.csv(., row.names = 1)
+
+# Efavirenz_L2
+
+ef_df_list <- vector("list")
+
+for(who in c("Maternal", "Cord")){
+  
+  volcano_df <- read.csv(glue::glue("{volcano_dir}{Sys.Date()}_{m}_{group1}_{group2}_{who}_volcano_df.csv")) 
+  
+  volcano_df_efa <- volcano_df %>%
+    filter(annotation == "Efavirenz_L2") %>%
+    dplyr::left_join(., kp_df,
+                     by = join_by(feature_id == id))
+  
+  for(this_feat in volcano_df_efa$feature_id){
+    
+    plot_boxplot_series(volcano_df,
+                        n_top = 5,
+                        this_ft_tbl,
+                        this_metadata %>% filter(origin == who),
+                        kp_df,
+                        m,
+                        who,
+                        efa_dir,
+                        "single",
+                        this_feat)
+  }
+  
+  # 8-Hydroxyefavirenz_L4
+  
+  volcano_df_8efa <- volcano_df %>%
+    filter(annotation == "8-Hydroxyefavirenz_L4") %>%
+    dplyr::left_join(., kp_df,
+                     by = join_by(feature_id == id))
+  
+  for(this_feat in volcano_df_8efa$feature_id){
+    
+    plot_boxplot_series(volcano_df,
+                        n_top = 5,
+                        this_ft_tbl,
+                        this_metadata %>% filter(origin == who),
+                        kp_df,
+                        m,
+                        who,
+                        efa_dir,
+                        "single",
+                        this_feat)
+  }
+  
+  # Correlation between the 2
+  
+  # x = efavirenz F29911
+  # y = 8-hydroxy F21642 
+  
+  efa_ft <- "F29911"
+  hyroxy_ft <- "F21642" 
+  
+  who_inx <- which(this_metadata$origin == who)
+    
+  who_ft_tbl <- this_ft_tbl[who_inx,] 
+    
+  who_meta <- this_metadata[who_inx,] 
+  
+  ef_df <- who_ft_tbl %>%
+    as.data.frame() %>%
+    select(efa_ft, hyroxy_ft)
+  
+  ef_df_list[[who]] <- ef_df
+  
+  efa_ft_info <- kp_df %>%
+    filter(id == efa_ft)
+  
+  hydroxy_ft_info <- kp_df %>%
+    filter(id == hyroxy_ft)
+  
+  efa_cor <- cor.test(ef_df[[efa_ft]], ef_df[[hyroxy_ft]])
+  
+  p_cor_ef <- ggplot2::ggplot(data = ef_df,
+                              aes(x = .data[[efa_ft]],
+                                  y = .data[[hyroxy_ft]])) +
+    geom_point(size = 3,
+               fill = "#D41159",
+               color = "black",
+               alpha = 0.75,
+               shape = 21, ) +
+    geom_smooth(method='lm',
+                se = FALSE,
+                color = "black") +
+    xlab(glue::glue("Efavirenz\n{efa_ft} - {round(efa_ft_info$mz, digits=4)} m/z @ {efa_ft_info$rtime}s")) +
+    ylab(glue::glue("{hydroxy_ft_info %>% pull(annotation)}\n{hyroxy_ft} - {round(hydroxy_ft_info$mz, digits=4)} m/z @ {hydroxy_ft_info$rtime}s")) +
+    theme_classic() +
+    labs(
+      title = glue::glue("ρ in {who}: {round(efa_cor$estimate, digits = 2)}")
+    ) +
+    theme(
+      text = element_text(family = "Arial"),
+      strip.background = element_blank(),
+      axis.text = element_text(size = 9),
+      axis.title.x = element_text(size = 9.5, margin = margin(t = 1.5)), # reduce space above x-axis title
+      axis.title.y = element_text(size = 9.5, margin = margin(r = 1.5)), # reduce space right of y-axis title
+      plot.title = element_text(size = 11, hjust = 0.5)) 
+  
+  ggsave(filename = glue::glue("{efa_dir}{Sys.Date()}_{m}_{who}_efa2efa_{efa_ft}_{hyroxy_ft}_corr_plot.png"),
+         width = 2.7,
+         height = 3)
+  
+}
+
+```
+
+### Correlation between mother and baby
+
+```{r}
+
+mom_efa <- ef_df_list$Maternal %>%
+  rename_with(~ paste0(., "_M")) %>%
+  tibble::rownames_to_column(., "sample_name") %>%
+  dplyr::left_join(., this_metadata %>%
+                     mutate(dyad_id = gsub("_.*", "", Sample_ID)) %>%
+                     select(sample_name, dyad_id))
+
+cord_efa <- ef_df_list$Cord %>%
+  rename_with(~ paste0(., "_C")) %>%
+  tibble::rownames_to_column(., "sample_name") %>%
+  dplyr::left_join(., this_metadata %>%
+                     mutate(dyad_id = gsub("_.*", "", Sample_ID)) %>%
+                     select(sample_name, dyad_id)) %>%
+  select(-sample_name) %>%
+  dplyr::left_join(., mom_efa %>% select(-sample_name)) %>%
+  dplyr::filter(complete.cases(.))
+
+for(this_feat in c(hyroxy_ft, efa_ft)){
+  
+  momft <- paste0(this_feat, "_M")
+  cordft <- paste0(this_feat, "_C")
+  
+  efa_cor_mb <- cor.test(cord_efa[[momft]], cord_efa[[cordft]])
+  
+  ft_info <- kp_df %>%
+    filter(id == this_feat) 
+  
+  p_cor_ef_mb <- ggplot2::ggplot(data = cord_efa,
+                              aes(x = .data[[momft]],
+                                  y = .data[[cordft]])) +
+    geom_point(size = 3,
+               fill = "#D41159",
+               color = "black",
+               alpha = 0.75,
+               shape = 21, ) +
+    geom_smooth(method='lm',
+                se = FALSE,
+                color = "black") +
+    xlab(glue::glue("Maternal")) +
+    ylab(glue::glue("Cord")) +
+    theme_classic() +
+    labs(
+      title = glue::glue("ρ: {round(efa_cor_mb$estimate, digits = 2)}\n{ft_info$annotation}\n{ft_info$mz} @ {round(ft_info$rtime, 2)}")
+    ) +
+    theme(
+      text = element_text(family = "Arial"),
+      strip.background = element_blank(),
+      axis.text = element_text(size = 9),
+      axis.title.x = element_text(size = 9.5, margin = margin(t = 1.5)), # reduce space above x-axis title
+      axis.title.y = element_text(size = 9.5, margin = margin(r = 1.5)), # reduce space right of y-axis title
+      plot.title = element_text(size = 11, hjust = 0.5)) 
+  
+  ggsave(filename = glue::glue("{efa_dir}{Sys.Date()}_{m}_{this_feat}_maternal_cord_corr_plot.png"),
+         width = 2.7,
+         height = 3)
+  
+}
+
+```
+
+### Efavirenz correlation to all other features
+
+```{r}
+
+efa_cors <- vector("list")
+
+for(this_who in c("Maternal", "Cord")){
+  
+  this_ef_df <- this_ft_tbl %>%
+    as.data.frame() %>%
+    select(efa_ft, hyroxy_ft) %>%
+    tibble::rownames_to_column(.) %>%
+    dplyr::rename(sample_name = rowname) %>%
+    filter(sample_name %in% 
+           (this_metadata %>% 
+           filter(origin == this_who) %>% 
+           pull(sample_name))) %>%
+    select(F29911) 
+  
+  other_ft_df <- this_ft_tbl %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column(.) %>%
+    dplyr::rename(sample_name = rowname) %>%
+    filter(sample_name %in% 
+             (this_metadata %>% 
+                filter(origin == this_who) %>% 
+                pull(sample_name))) %>%
+    select(-c(efa_ft, sample_name)) 
+  
+  # correlations (vector)
+  cors <- cor(this_ef_df, other_ft_df, use="pairwise.complete.obs")
+  
+  # sample size (pairwise complete obs)
+  n <- apply(cbind(this_ef_df, other_ft_df), 2, function(col) sum(complete.cases(this_ef_df, col)))[-1]
+  
+  # t-statistics
+  tvals <- cors * sqrt( (n - 2) / (1 - cors^2) )
+  
+  # two-sided p-values
+  pvals <- 2 * pt(-abs(tvals), df = n - 2)
+  
+  # corrected p-values
+  padj <- p.adjust(pvals, method = "BH")
+  
+  # results table
+  cor_results <- data.frame(
+    feature_id = colnames(cors),
+    correlation = cors[1,],
+    pvalue = pvals[1,],
+    pvalue_adjusted = padj
+  ) 
+  
+  volcano_df <- read.csv(glue::glue("{volcano_dir}{Sys.Date()}_{m}_{group1}_{group2}_{this_who}_volcano_df.csv"))
+
+  all_kp <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{m}_empirical_compounds.csv") %>%
+    read.csv(., row.names = 1)
+
+  both_df <- dplyr::bind_rows(cor_results %>%
+                                select(feature_id, pvalue_adjusted) %>%
+                                mutate(type = "Features correlated with Efavirenz"),
+                              volcano_df %>%
+                                select(feature_id, pvalue_adjusted) %>%
+                                mutate(type = "Features significantly different between HUU/HEU")) %>%
+    mutate(significant = pvalue_adjusted < 0.01) %>%
+    group_by(feature_id) %>%
+    mutate(count = sum(significant, na.rm = TRUE)) %>%
+    ungroup() %>%
+    mutate(shape = (count == 2)) %>%
+    dplyr::left_join(., all_kp %>%
+                       mutate(feature_id = rownames(all_kp)) %>%
+                       select(feature_id, mz, rtime))
+
+  efa_cors[[this_who]] <- both_df
+  
+  cat((sum(both_df$shape)/2), "features out of", nrow(cor_results), "found in both.")
+  
+  p_efz <- ggplot(both_df %>%
+                    filter(rtime < 450),
+                  aes(y = -log10(pvalue_adjusted),
+                      x = rtime)) +
+    geom_point(aes(fill = significant),
+               shape = 21,
+               color = "black",
+               stroke = 0.5,
+               size = 1.5,
+               alpha = 0.7) +
+    theme_minimal() +
+    scale_fill_manual(values = c("TRUE" = "#D41159",
+                                 "FALSE" = "darkgrey"),
+                      guide = "none") +
+    theme(
+      text = element_text(family = "Arial"),
+      axis.text = element_text(size = 9),
+      axis.title.x = element_text(size = 9, margin = margin(t = 2.5)), # reduce space above x-axis title
+      axis.title.y = element_text(size = 9, margin = margin(r = 2.5)), # reduce space right of y-axis title
+      plot.title = element_text(size = 9.5, hjust = 0.5),
+      strip.text = element_text(size = 10, margin = margin(b = 2, t = 2)),
+      strip.background = element_rect(
+        fill = "grey90",     # background color
+        color = "black",     # border color
+        linewidth = 0.5      # border thickness
+      )) +
+    facet_wrap(. ~ type, nrow = 2) +
+    labs(
+      x = "Retention Time (seconds)",
+      y = "-log10 Unadjusted p-value",
+      shape = "Found in both",
+      title = glue::glue("{this_who} ρ BH < 0.01")
+    ) +
+    geom_hline(yintercept = -log10(0.01),
+               linetype = "dashed")
+
+  ggplot2::ggsave(glue::glue("{efa_dir}{Sys.Date()}_{m}_{this_who}_efavirenz_all_features_correlations.png"),
+                  width = 6,
+                  height = 3.5)
+  
+  # Save outputs for mummichog
+  cor_results_mummichog <- cor_results %>%
+    dplyr::left_join(., all_kp %>%
+                       mutate(feature_id = rownames(all_kp)) %>%
+                       select(feature_id, mz, rtime)) %>%
+    select(mz, rtime, pvalue, correlation, feature_id) %>%
+    rename('m/z' = "mz",
+           "retention time" = "rtime",
+           "p-value" = "pvalue",
+           "statistic" = "correlation") %>%
+      write_tsv(., 
+                glue::glue("~/Desktop/JAX_Python/HEU_mummichog/{Sys.Date()}_{m}_{this_who}_efavirenz_cor_mummichog_input.tsv"))
+  
+}
+```
+
+### Upset Plot Cord + Maternal
+
+```{r}
+
+# Prepare data for the UpSet plot
+upset_df <- list(Efavirenz_Correlated_M = efa_cors$Maternal %>%
+                   dplyr::filter(significant & 
+                                   type == "Features correlated with Efavirenz") %>%
+                   pull(feature_id),
+                 HEU_Significant_M = efa_cors$Maternal %>%
+                   dplyr::filter(significant & 
+                                   type == "Features significantly different between HUU/HEU") %>%
+                   pull(feature_id),
+                 Efavirenz_Correlated_C = efa_cors$Cord %>%
+                   dplyr::filter(significant & 
+                                   type == "Features correlated with Efavirenz") %>%
+                   pull(feature_id),
+                 HEU_Significant_C = efa_cors$Cord %>%
+                   dplyr::filter(significant & 
+                                   type == "Features significantly different between HUU/HEU") %>%
+                   pull(feature_id))
+
+upset_m = make_comb_mat(upset_df, mode = "intersect")
+upset_m_filt <- upset_m[comb_degree(upset_m) > 1]
+
+png(glue::glue("{efa_dir}{Sys.Date()}_{m}_maternal_cord_upset_plot_filt.png"), 
+    width = 1400, 
+    height = 800, 
+    res = 320)
+
+UpSet(upset_m_filt,
+      row_gap = unit(0, "mm"),
+      set_order = c("Efavirenz_Correlated_C", "HEU_Significant_C",
+                    "Efavirenz_Correlated_M", "HEU_Significant_M"),
+      comb_col = c("#11224E", "#D41159",
+                   "#CCA942", "#0C7D6B")[comb_degree(upset_m_filt)],
+      
+      top_annotation = upset_top_annotation(m = upset_m_filt,
+                                            add_numbers = TRUE,
+                                            annotation_name_gp = gpar(fontsize = 10, fontfamily = "Arial"),
+                                            number_gp = gpar(fontsize = 10,
+                                                             fontfamily = "Arial")),
+      
+      right_annotation = 
+        upset_right_annotation(m = upset_m_filt,
+                               add_numbers = TRUE,
+                               annotation_name_gp = gpar(fontsize = 10, fontfamily = "Arial"),
+                               number_gp = gpar(fontsize = 10, fontfamily = "Arial")),
+      
+      # main matrix text (row/column names)
+      row_names_gp = gpar(fontsize = 10, fontfamily = "Arial"),
+      column_names_gp = gpar(fontsize = 10, fontfamily = "Arial"))
+
+dev.off()
+
+```
+
+```{r}
+
+efv_cor_dir <- "/Users/jasminechong/Desktop/JAX_Python/HEU_mummichog/"
+
+cord <- glue::glue("{efv_cor_dir}2025-12-16_HILIC_neg_Cord_efavirenz_cor_mummichog_input.tsv") %>%
+  readr::read_delim(.) %>%
+  mutate(padj = p.adjust(as.numeric(`p-value`), method = "BH"))
+
+cord_sig <- cord %>%
+  filter(padj < 0.01) %>%
+  nrow()
+
+maternal <- glue::glue("{efv_cor_dir}2025-12-16_HILIC_neg_Maternal_efavirenz_cor_mummichog_input.tsv") %>%
+  readr::read_delim(.) %>%
+  mutate(padj = p.adjust(as.numeric(`p-value`), method = "BH"))
+
+maternal_sig <- maternal %>%
+  filter(padj < 0.01) %>%
+  nrow()
+
+```
+
+## Mummichog
+
+```{r}
+
+mum_output_dir <- glue::glue("{figure2_dir}mummichog/")
+dir.create(mum_output_dir)
+
+# For HILIC Pos
+mum_results_path <- "/Volumes/T7/Li Lab/Projects/HEU/OLD/2025-12-14_HEU_Metabolomics_V3/heu_data/SL_mummichog/"
+
+# OLD results 
+sl_path <- "/Volumes/T7/Li Lab/Projects/HEU/OLD/2025-10-01_HEU_datafreeze/metabolomics/SL-20250914/"
+
+mummichog_results <- list.files(path = sl_path,
+                                recursive = TRUE,
+                                pattern = "mcg_pathwayanalysis_mcg_.*\\.xlsx$",
+                                full.names = TRUE) 
+
+mummichog_results <- mummichog_results[str_detect(mummichog_results, "RP_neg")] %>%
+  # map_dfr(~ readr::read_delim(.x, show_col_types = FALSE) %>%
+  #           mutate(source_file = basename(.x))) %>%
+  map_dfr(~ readxl::read_excel(.x) %>%
+          mutate(source_file = basename(.x))) %>%
+  dplyr::bind_rows() %>%
+  dplyr::rename(pvalue = 'p-value') %>%
+  group_by(source_file) %>%  
+  mutate(p_adj = p.adjust(pvalue, method = "BH")) %>%
+  ungroup() 
+
+# HILIC results only
+m = "RP_neg"
+
+hilic_mummichog_results <- mummichog_results %>%
+  select(pathway, pvalue, p_adj, source_file) %>%
+  filter(str_detect(source_file, "RP")) %>%
+  mutate(test = ifelse(grepl("Efavirenz", source_file), "EFV_Cor", "HEU_HUU"),
+         who = ifelse(grepl("mothers", source_file), "Maternal", "Cord"),
+         group = paste0(who, "\n", test),
+         group = factor(group,
+                        levels = c("Cord\nEFV_Cor", "Cord\nHEU_HUU", 
+                                   "Maternal\nEFV_Cor", "Maternal\nHEU_HUU"))) %>%
+  group_by(pathway) %>%
+  filter(any(pvalue < 0.05, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(logq = -log10(pvalue),
+         is_sig = factor(pvalue < 0.05),
+         pathway = factor(pathway, levels = sort(unique(pathway), decreasing = TRUE)))
+
+# Define shapes and colors
+shapes <- c("FALSE" = 1, "TRUE" = 16)
+colors <- c("FALSE" = "darkgrey", "TRUE" = "black")
+
+# Plot
+p <- ggplot(hilic_mummichog_results,
+            aes(x = group, y = pathway)) +
+  geom_point(aes(size = logq, shape = is_sig, color = is_sig)) +  # separate points horizontally for the same pathway
+  scale_shape_manual(values = shapes) +
+  scale_color_manual(values = colors) +
+  scale_size_continuous(range = c(2,6)) +
+  theme_minimal() +
+  guides(
+    color = "none",
+    shape = "none"
+  ) +
+  labs(x = "",
+       y = "Pathway",
+       size = "-log10 P-value",
+       shape = "",
+       color = "") +
+  theme(
+    text = element_text(family = "Arial"),
+    axis.text.y = element_text(size = 10),
+    axis.text.x = element_text(size = 9),
+    axis.title = element_text(size = 10.5),
+    axis.line = element_line(color = "black"))
+
+ggplot2::ggsave(glue::glue("{mum_output_dir}{Sys.Date()}_{m}_mummichog_results_plot_rawp.png"),
+                width = 8,
+                height = 7)
+
+```
