@@ -11,23 +11,22 @@ editor: visual
 #| label: setup
 #| warning: false
 
-setwd("/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript/")
-
 this_date <- Sys.Date()
 
-output_dir <- glue::glue("/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript/{this_date}_processed_data/")
+output_dir <- glue::glue("./{this_date}_processed_data/")
 dir.create(output_dir)
 
-results_dir <- glue::glue("/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript/{this_date}_results/")
+results_dir <- glue::glue("./{this_date}_results/")
 dir.create(results_dir)
 
-met_data_dir <- ("/Volumes/T7/Li Lab/Projects/HEU/OLD/2025-12-14_HEU_Metabolomics_V3/heu_data/")
+met_data_dir <- ("./2026_07_30_HEU_Metabolomics_DataFreeze/")
 
 library(tidyverse)
 library(matrixTests)
 library(ggrepel)
 library(ComplexHeatmap)
 library(showtext)
+library(IRanges)
 
 font_add("Arial", "/System/Library/Fonts/Supplemental/Arial.ttf")
 showtext_opts(dpi = 300)
@@ -46,7 +45,7 @@ for(m in modes){
   
   cat(m, "data processing beginning...")
   
-  this_met_output_dir <- glue::glue("{output_dir}{results_date}_{m}/")
+  this_met_output_dir <- glue::glue("{output_dir}{this_date}_{m}/")
   dir.create(this_met_output_dir)
   
   ion_mode <- ifelse(grepl("pos", m), "pos", "neg")
@@ -801,7 +800,7 @@ group1 <- "HUU"
 group2 <- "HEU"
 group_var = "status"
 
-results_date = "2025-12-16"
+results_date = this_date
 
 for(m in modes){
   
@@ -826,7 +825,7 @@ for(m in modes){
     read.csv(., row.names = 1) %>%
     rename(feature_id = id_number)
   
-  kp_path <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{this_m}_empirical_compounds.csv")
+  kp_path <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{m}_empirical_compounds.csv")
     
   kp_df <- read.csv(kp_path) %>%
     mutate(annotation = NA)
@@ -894,7 +893,7 @@ for(m in modes){
                  fc_res = fc_df,
                  fc_thresh = 1,
                  prefix = glue::glue("{Sys.Date()}_{m}_{group1}_{group2}_{who}"),
-                 output_dir = volcano_dir,
+                 volcano_dir = volcano_dir,
                  pvalue_type = "adjusted",
                  width = 6,
                  height = 5,
@@ -1056,7 +1055,7 @@ volcano_results <- list.files(volcano_dir,
 
 for(m in modes){
   
-  this_met_output_dir <- glue::glue("/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript/{results_date}_processed_data/{results_date}_{m}")
+  this_met_output_dir <- glue::glue("{output_dir}{results_date}_{m}/")
   
   this_annots <- list.files(this_met_output_dir,
                             pattern = "annotations",
@@ -1095,38 +1094,14 @@ volcano_results_df <- volcano_results_list %>%
 
 ```
 
-### Export tables
+### Export mummichog inputs
 
 ```{r}
 
-volcano_results <- list.files(volcano_dir,
-                              pattern = "supp_volcano_table",
-                              full.names = TRUE)
+## Mummichog Inputs
 
-for(m in modes){
-  
-  this_met_output_dir <- glue::glue("{output_dir}{this_date}_{m}/")
-  
-  this_annots <- list.files(this_met_output_dir,
-                            pattern = "annotations",
-                            full.names = TRUE) %>%
-    read.csv(., row.names = 1) %>%
-    rename(feature_id = id_number)
-  
-  cat(nrow(this_annots), m)
-  
-  this_m_volcano_results <- grep(m, volcano_results)
-  
-  for(i in this_m_volcano_results){
-    
-    volcano_res <- read.csv(volcano_results[i], row.names = 1) %>%
-      dplyr::left_join(., this_annots) %>%
-      arrange(TT_adjpvalue) %>%
-      write.csv(glue::glue("/Volumes/T7/Li Lab/Projects/HEU/2025-12-04_HEU_Metabolomics_Manuscript_V3/volcano_results/{basename(volcano_results[i])}"))
-    
-  }
-  
-}
+mummichog_output_dir <- glue::glue("{results_dir}/mummichog_inputs/")
+dir.create(mummichog_output_dir)
 
 volcano_results <- list.files(volcano_dir,
                               pattern = "volcano_df",
@@ -1165,40 +1140,32 @@ for(m in modes){
 
 ## Mummichog
 
+Below just for RPneg.
+
 ```{r}
 
 mum_output_dir <- glue::glue("{figure2_dir}mummichog/")
 dir.create(mum_output_dir)
 
-# For HILIC Pos
-mum_results_path <- "/Volumes/T7/Li Lab/Projects/HEU/OLD/2025-12-14_HEU_Metabolomics_V3/heu_data/SL_mummichog/"
+mum_results_path <- glue::glue("{met_data_dir}SL_mummichog/")
 
-# OLD results 
-sl_path <- "/Volumes/T7/Li Lab/Projects/HEU/OLD/2025-10-01_HEU_datafreeze/metabolomics/SL-20250914/"
-
-mummichog_results <- list.files(path = sl_path,
+mummichog_results <- list.files(path = mum_results_path,
                                 recursive = TRUE,
                                 pattern = "mcg_pathwayanalysis_mcg_.*\\.xlsx$",
                                 full.names = TRUE) 
 
-mummichog_results <- mummichog_results[str_detect(mummichog_results, "RP_neg")] %>%
-  # map_dfr(~ readr::read_delim(.x, show_col_types = FALSE) %>%
-  #           mutate(source_file = basename(.x))) %>%
+m = "RP_neg"
+
+mummichog_results <- mummichog_results[str_detect(mummichog_results, m)] %>%
   map_dfr(~ readxl::read_excel(.x) %>%
           mutate(source_file = basename(.x))) %>%
   dplyr::bind_rows() %>%
   dplyr::rename(pvalue = 'p-value') %>%
   group_by(source_file) %>%  
   mutate(p_adj = p.adjust(pvalue, method = "BH")) %>%
-  ungroup() 
-
-# HILIC results only
-m = "RP_neg"
-
-hilic_mummichog_results <- mummichog_results %>%
-  select(pathway, pvalue, p_adj, source_file) %>%
-  filter(str_detect(source_file, "RP")) %>%
-  mutate(test = ifelse(grepl("Efavirenz", source_file), "EFV_Cor", "HEU_HUU"),
+  ungroup() %>%
+  dplyr::select(pathway, pvalue, p_adj, source_file) %>%
+  dplyr::mutate(test = ifelse(grepl("Efavirenz", source_file), "EFV_Cor", "HEU_HUU"),
          who = ifelse(grepl("mothers", source_file), "Maternal", "Cord"),
          group = paste0(who, "\n", test),
          group = factor(group,
@@ -1216,7 +1183,7 @@ shapes <- c("FALSE" = 1, "TRUE" = 16)
 colors <- c("FALSE" = "darkgrey", "TRUE" = "black")
 
 # Plot
-p <- ggplot(hilic_mummichog_results,
+p <- ggplot(mummichog_results,
             aes(x = group, y = pathway)) +
   geom_point(aes(size = logq, shape = is_sig, color = is_sig)) +  # separate points horizontally for the same pathway
   scale_shape_manual(values = shapes) +
@@ -1253,19 +1220,13 @@ Using updated annotations - 2026-05-28_combined_heu_annotations_authlib_csm_srm_
 
 modes <- c("HILIC_neg", "HILIC_pos", "RP_neg", "RP_pos") 
 
-results_date = "2025-12-16"
-
-output_dir <- glue::glue("/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript/{results_date}_processed_data/")
-
-volcano_dir <- "/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript/2026-01-28_results/figure1/volcano/"
-
 volcano_results_list <- vector("list")
 
 volcano_results <- list.files(volcano_dir,
                               pattern = "volcano_df",
                               full.names = TRUE)
 
-annot_2026 <- "/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/combining_ms1_ms2_annotations/2026-05-28_combined_heu_annotations_authlib_csm_srm_l2_l4.csv" %>% 
+annot_2026 <- glue::glue("{met_data_dir}JC_annotations/2026-05-28_combined_heu_annotations_authlib_csm_srm_l2_l4.csv") %>% 
   read.csv(., row.names = 1) %>%
   dplyr::rename(feature_id = id)
 
@@ -1317,26 +1278,13 @@ volcano_results_df_anot_l2 <- volcano_results_df_anot %>%
   dplyr::filter(josh_anot_level %in% c("L0", "L1", "L2", "CSM"))
 
 write.csv(volcano_results_df_anot,
-          glue::glue("/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/combining_ms1_ms2_annotations/{Sys.Date()}_annotation_comparison_heu.csv"))
+          glue::glue("{volcano_dir}{Sys.Date()}_updated_annotation_volcano_results_allmodes.csv"))
 
 ```
 
 ### Steroids/Hormones
 
 ```{r}
-
-metab_manu <- "/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript/"
-
-output_dir <- "/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript/2026-01-28_results/"
-
-fig_dir <- glue::glue("{metab_manu}/{Sys.Date()}_figures/")
-dir.create(fig_dir)
-
-fig1_dir <- glue::glue("{fig_dir}/Figure_1/")
-dir.create(fig1_dir)
-
-bp_dir <- glue::glue("{fig1_dir}/boxplots/")
-dir.create(bp_dir)
 
 steroid_dir <- glue::glue("{bp_dir}steroids/")
 dir.create(steroid_dir)
@@ -1346,8 +1294,8 @@ steroids <- c("estradiol", "pregnen", "pregnan",
                         "sterone", "dione", "etriol")
 
 steroid_anots <- volcano_results_df %>%
-  filter(grepl(paste0(steroids, collapse = "|"), tolower(`2026_lib_name`))) %>%
-  select(feature_id, 
+  dplyr::filter(grepl(paste0(steroids, collapse = "|"), tolower(`2026_lib_name`))) %>%
+  dplyr::select(feature_id, 
          `2026_lib_name`,
          `2026_anot_level`,
          mode,
@@ -1707,13 +1655,11 @@ auth_std <- data.frame(
   mode = c("HILIC_neg", "RP_neg", "HILIC_neg", "RP_neg")
 )
 
-library(IRanges)
-
 rt_tolerance = 30
 mz_tolerance_ppm = 10
 
 khipu_df <- list.files(
-  path = "/Volumes/T7/Li Lab/Projects/HEU/OLD/2025-12-14_HEU_Metabolomics_V3/heu_data/12_03_2025_empirical_compounds/",
+  path = glue::glue("{met_data_dir}12_03_2025_empirical_compounds/"),
   full.names = TRUE) %>%
   map_dfr(~ readr::read_csv(.x, show_col_types = FALSE) %>%
             mutate(source_file = basename(.x))) %>%
@@ -1744,22 +1690,19 @@ all_matches <- dplyr::bind_rows(hilicneg_matches,
                                 rpneg_matches)
 
 write.csv(all_matches,
-          glue::glue("/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/MS1_annotation/{Sys.Date()}_efavirenz_auth_std_matches.csv"))
+          glue::glue("{results_dir}{Sys.Date()}_efavirenz_auth_std_matches.csv"))
 ```
 
 ### Boxplots
 
 ```{r}
-fig_dir <- "/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript//2026-05-28_figures/"
-figure2_dir <- glue::glue("{fig_dir}Figure_2/")
-dir.create(figure2_dir)
 
 efa_dir <- glue::glue("{figure2_dir}efavirenz/")
 dir.create(efa_dir)
 
 m = "RP_neg"
 
-this_met_output_dir <- glue::glue("/Volumes/T7/Li Lab/github/2025-08-04_HEU_analysis/immune_profile_analysis/heu_metabolomics_manuscript/{results_date}_processed_data/{results_date}_{m}/")
+this_met_output_dir <- glue::glue("{output_dir}{results_date}_{m}/")
 
 this_ft_tbl <- list.files(this_met_output_dir,
                           pattern = "feature_table",
@@ -1876,6 +1819,9 @@ for(who in c("Maternal", "Cord")){
 
 metabolite_pattern = "efavirenz"
 
+pval_thresh = 0.05
+fc_thresh = 1
+
 for(who in c("Cord", "Maternal")){
   
   all_res_df <- volcano_results_all %>%
@@ -1954,19 +1900,19 @@ for(who in c("Cord", "Maternal")){
 ```{r}
 
 mom_efa <- ef_df_list$Maternal %>%
-  rename_with(~ paste0(., "_M")) %>%
+  dplyr::rename_with(~ paste0(., "_M")) %>%
   tibble::rownames_to_column(., "sample_name") %>%
   dplyr::left_join(., this_metadata %>%
                      mutate(dyad_id = gsub("_.*", "", Sample_ID)) %>%
                      select(sample_name, dyad_id))
 
 cord_efa <- ef_df_list$Cord %>%
-  rename_with(~ paste0(., "_C")) %>%
+  dplyr::rename_with(~ paste0(., "_C")) %>%
   tibble::rownames_to_column(., "sample_name") %>%
   dplyr::left_join(., this_metadata %>%
                      mutate(dyad_id = gsub("_.*", "", Sample_ID)) %>%
                      select(sample_name, dyad_id)) %>%
-  select(-sample_name) %>%
+  dplyr::select(-sample_name) %>%
   dplyr::left_join(., mom_efa %>% select(-sample_name)) %>%
   dplyr::filter(complete.cases(.))
 
@@ -2069,7 +2015,7 @@ for(this_who in c("Maternal", "Cord")){
     pvalue_adjusted = padj
   ) 
   
-  volcano_df <- read.csv(glue::glue("{volcano_dir}2026-01-29_{m}_{group1}_{group2}_{this_who}_volcano_df.csv"))
+  volcano_df <- read.csv(glue::glue("{volcano_dir}{results_date}_{m}_{group1}_{group2}_{this_who}_volcano_df.csv"))
 
   all_kp <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{m}_empirical_compounds.csv") %>%
     read.csv(., row.names = 1)
