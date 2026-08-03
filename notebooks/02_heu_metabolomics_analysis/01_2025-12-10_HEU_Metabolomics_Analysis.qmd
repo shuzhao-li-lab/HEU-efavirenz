@@ -251,7 +251,7 @@ plot_boxplot_series <- function(top_volcano_ft,
     dplyr::select(all_of(top_features$feature_id)) %>%
     tibble::rownames_to_column(.) %>%
     dplyr::rename(sample_name = rowname) %>%
-    filter(sample_name %in% these_samples$sample_name) %>%
+    dplyr::filter(sample_name %in% these_samples$sample_name) %>%
     dplyr::left_join(., these_samples %>%
                        dplyr::select(sample_name, status)) %>%
     dplyr::mutate(status = factor(status, levels = c("HUU", "HEU"))) %>%
@@ -744,7 +744,7 @@ plot_volcano <- function(m,
   write.csv(all_res_df, glue::glue("{volcano_dir}{prefix}_volcano_df.csv"))
   
   supp_table <- all_res_df %>%
-    rename(
+    dplyr::rename(
       n_HUU = obs.x,
       n_HEU = obs.y,
       mean_HUU = mean.x,
@@ -753,12 +753,12 @@ plot_volcano <- function(m,
       TT_pvalue = pvalue,
       TT_adjpvalue = pvalue_adjusted
     ) %>%
-    mutate(mean_HUU = signif(mean_HUU, 2),
+    dplyr::mutate(mean_HUU = signif(mean_HUU, 2),
            mean_HEU = signif(mean_HEU, 2),
            Log2FC = signif(Log2FC, 2),
            TT_pvalue = signif(TT_pvalue, 2),
            TT_adjpvalue = signif(TT_adjpvalue, 2)) %>%
-    select(feature_id, n_HUU, n_HEU, mean_HUU, mean_HEU, 
+    dplyr::select(feature_id, n_HUU, n_HEU, mean_HUU, mean_HEU, 
            Log2FC, TT_pvalue, TT_adjpvalue) %>%
     arrange(TT_adjpvalue)
   
@@ -816,14 +816,14 @@ for(m in modes){
                               pattern = "metadata",
                               full.names = TRUE) %>%
     read.csv(., row.names = 1) %>%
-    mutate(who = ifelse(origin == "Maternal", "Maternal", "Cord"),
+    dplyr::mutate(who = ifelse(origin == "Maternal", "Maternal", "Cord"),
            plot_group = paste0(who, "_", status))
   
   this_annots <- list.files(this_met_output_dir,
                             pattern = "annotations",
                             full.names = TRUE) %>%
     read.csv(., row.names = 1) %>%
-    rename(feature_id = id_number)
+    dplyr::rename(feature_id = id_number)
   
   kp_path <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{m}_empirical_compounds.csv")
     
@@ -976,7 +976,7 @@ plot_series <- function(steroid_substrates_anots,
                                 pattern = "metadata",
                                 full.names = TRUE) %>%
       read.csv(., row.names = 1) %>%
-      mutate(who = ifelse(origin == "Maternal", "Maternal", "Cord"),
+      dplyr::mutate(who = ifelse(origin == "Maternal", "Maternal", "Cord"),
              plot_group = paste0(who, "_", status))
     
     kp_path <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{this_m}_empirical_compounds.csv")
@@ -1061,7 +1061,7 @@ for(m in modes){
                             pattern = "annotations",
                             full.names = TRUE) %>%
     read.csv(., row.names = 1) %>%
-    rename(feature_id = id_number)
+    dplyr::rename(feature_id = id_number)
   
   cat(nrow(this_annots), m)
   
@@ -1073,7 +1073,7 @@ for(m in modes){
       dplyr::left_join(., this_annots) %>%
       arrange(pvalue) %>%
       dplyr::filter(pvalue < 0.05) %>%
-      mutate(file = basename(volcano_results[i]))
+      dplyr::mutate(file = basename(volcano_results[i]))
     
     volcano_results_list[[basename(volcano_results[i])]] <- volcano_res
     
@@ -1130,7 +1130,7 @@ for(m in modes){
                     'retention time' = "rtime",
                     "p-value" = "pvalue") %>%
       write_tsv(., 
-                glue::glue("~/Desktop/JAX_Python/HEU_mummichog/{tools::file_path_sans_ext(basename(volcano_results[i]))}_mummichog_input.tsv"))
+                glue::glue("{mummichog_output_dir}{tools::file_path_sans_ext(basename(volcano_results[i]))}_mummichog_input.tsv"))
       
   }
   
