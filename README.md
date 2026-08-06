@@ -1,8 +1,7 @@
 # HEU-efavirenz metabolomics
 
-This is the repository for data analysis in:
-Distinct biochemical phenotypes of HIV exposed infants driven by antiviral medication
-Jasmine Chong1,#, Shujian Zheng1,#, Jennifer Canniff2, Michael J Johnson2, Elizabeth Aiken1, Joshua M. Mitchell1, Maheshwor Thapa1, Sonali Mishra1, Shabir Madhi6,7, Adriana Weinberg2,3,4,, Shuzhao Li1,8, 
+This is the repository for data analysis in Chong and Zheng et al., 
+"Distinct biochemical phenotypes of HIV exposed infants driven by antiviral medication".
 
 All steps are described under `notebooks/`, using shell or R scripts, notebooks in R or Python:
 
@@ -28,8 +27,9 @@ All steps are described under `notebooks/`, using shell or R scripts, notebooks 
     └── 01_2025-12-10_HEU_Metabolomics_Analysis.qmd
 ```
 
-## Data and Code Availability: 	
-To add.
+## Data Availability: 	
+The input data (metabolomics and meta data) used in this project are available on Zenodo (DOI 10.5281/zenodo.21827608) and as release on this repo:
+https://github.com/shuzhao-li-lab/HEU-efavirenz/releases/download/v1.0-data/2026_07_30_HEU_Metabolomics_DataFreeze.zip
 
-
-
+## Citation
+To come.
