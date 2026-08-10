@@ -41,6 +41,10 @@ showtext_auto(enable = TRUE)
 
 modes <- c("HILIC_neg", "HILIC_pos", "RP_neg", "RP_pos") 
 
+annot_2026 <- glue::glue("{met_data_dir}JC_annotations/2026-08-07_combined_heu_annotations_authlib_csm_srm_l2_l4.csv") %>% 
+  read.csv(., row.names = 1) %>%
+  dplyr::rename(feature_id = id)
+
 for(m in modes){
   
   cat(m, "data processing beginning...")
@@ -79,17 +83,12 @@ for(m in modes){
     
   }
   
-  ## format annotations
-  annot_tbl_path <- glue::glue("{met_data_dir}12_03_2025_annotations/{m}_deduped.tsv")
-  
-  annot_tbl <- readr::read_delim(annot_tbl_path, delim = ",")
-  
   # # get kipus with stable isotopes from JSON
   kp_path <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{m}_empirical_compounds.csv")
   
   kp_df <- read.csv(kp_path) %>%
-    group_by(kp_id) %>%
-    mutate(
+    dplyr::group_by(kp_id) %>%
+    dplyr::mutate(
       has_stable_isotope = case_when(ion_mode == "pos" ~  max(grepl("13C/12C,M+H+", ion_relation, fixed = TRUE)),
                                      ion_mode == "neg" ~ max(grepl("13C/12C,M-H-", ion_relation, fixed = TRUE))),
 
@@ -111,17 +110,17 @@ for(m in modes){
   }
   
   # add efavirenz
-  efz_fts <- annot_tbl %>%
-    filter(grepl("efavirenz", tolower(annotation)))
+  efz_fts <- annot_2026 %>%
+    filter(grepl("efavirenz", tolower(lib_name)))
   
   kp_df_df_filt <- kp_df_df_filt %>%
     dplyr::bind_rows(.,
                      kp_df %>%
-    filter(id %in% efz_fts$id_number)) %>%
-    dplyr::left_join(., annot_tbl,
-                     by = join_by(id == id_number)) %>%
+    dplyr::filter(id %in% efz_fts$id_number)) %>%
+    dplyr::left_join(., annot_2026,
+                     by = join_by(id == feature_id)) %>%
     # Could be duplicates
-    distinct()
+    dplyr::distinct()
   
   cat(nrow(kp_df_df_filt), " khipus in", m)
 
@@ -174,9 +173,8 @@ for(m in modes){
 
   write.csv(meta_df, glue::glue("{this_met_output_dir}{m}_metadata.csv"))
 
-  write.csv(annot_tbl %>%
-              filter(id_number %in% rownames(filtered_df_tbl_t)) %>%
-              select(-'...1'), 
+  write.csv(annot_2026 %>%
+              dplyr::filter(feature_id %in% rownames(filtered_df_tbl_t)), 
             glue::glue("{this_met_output_dir}{m}_annotations.csv"))
   
   cat(m, "data processing finished!")
@@ -211,8 +209,8 @@ plot_boxplot_series <- function(top_volcano_ft,
     # care about efavirenz and top n features based on p-values
     top_features <- top_volcano_ft %>%
     dplyr::left_join(., kp_df %>%
-                       dplyr::select(-annotation),
-                     by = join_by(feature_id == id)) %>%
+                        dplyr::select(-annotation),
+                      by = join_by(feature_id == id)) %>%
     # focus on high-confidence features
     dplyr::filter(!is.na(mz) | grepl("efavirenz", tolower(annotation))) %>%
     dplyr::mutate(plot_name = gsub("_.*", "", annotation),
@@ -227,7 +225,7 @@ plot_boxplot_series <- function(top_volcano_ft,
     top_features <- top_volcano_ft %>%
       dplyr::filter(feature_id %in% this_feat) %>%
       dplyr::left_join(., kp_df %>%
-                       dplyr::select(-annotation),
+                        dplyr::select(-annotation),
                      by = join_by(feature_id == id)) %>%
     dplyr::mutate(plot_name = gsub("_.*", "", annotation),
            plot_name = glue::glue("{stringr::str_trunc(plot_name, width = 20)}\n{round(mz, 4)}@{rtime}\n{m}")) 
@@ -822,8 +820,7 @@ for(m in modes){
   this_annots <- list.files(this_met_output_dir,
                             pattern = "annotations",
                             full.names = TRUE) %>%
-    read.csv(., row.names = 1) %>%
-    dplyr::rename(feature_id = id_number)
+    read.csv(., row.names = 1)
   
   kp_path <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{m}_empirical_compounds.csv")
     
@@ -897,7 +894,7 @@ for(m in modes){
                  pvalue_type = "adjusted",
                  width = 6,
                  height = 5,
-                 anot_df = this_annots,
+                 anot_df = this_annots %>% dplyr::mutate(annotation = lib_name),
                  highlight_metabolites = TRUE,
                  metabolite_pattern = "efavirenz")
     
@@ -907,15 +904,16 @@ for(m in modes){
       filter(important != "No Change" & !is.na(annotation))
     
     top_volcano_ft <- top_volcano %>%
-      filter(feature_id %in% colnames(this_ft_tbl)) %>%
-      arrange(pvalue_adjusted) %>%
-      group_by(annotation) %>%
-      slice_head(n = 1) %>%
-      ungroup() %>%
-      arrange(pvalue_adjusted) %>%
-      mutate(anot_level = gsub(".*_", "", annotation),
+      dplyr::filter(feature_id %in% colnames(this_ft_tbl)) %>%
+      dplyr::arrange(pvalue_adjusted) %>%
+      dplyr::group_by(annotation) %>%
+      dplyr::slice_head(n = 1) %>%
+      dplyr::ungroup() %>%
+      dplyr::arrange(pvalue_adjusted) %>%
+      dplyr::mutate(anot_level = gsub(".*_", "", annotation),
              keep = ifelse((anot_level %in% c("L1", "L2", "CSM") | !is.na(highlighted_met)), TRUE, FALSE)) %>%
-      filter(keep)
+      dplyr::filter(keep) %>%
+      dplyr::select(-c(mz, rtime))
     
     if(nrow(top_volcano_ft) > 20){
       top_volcano_ft <- top_volcano_ft[1:20,]
@@ -1061,7 +1059,7 @@ for(m in modes){
                             pattern = "annotations",
                             full.names = TRUE) %>%
     read.csv(., row.names = 1) %>%
-    dplyr::rename(feature_id = id_number)
+    dplyr::mutate(annotation = lib_name)
   
   cat(nrow(this_annots), m)
   
@@ -1214,74 +1212,6 @@ ggplot2::ggsave(glue::glue("{mum_output_dir}{Sys.Date()}_{m}_mummichog_results_p
 
 ## Metabolite groups of interest
 
-Using updated annotations - 2026-05-28_combined_heu_annotations_authlib_csm_srm_l2_l4.csv.
-
-```{r}
-
-modes <- c("HILIC_neg", "HILIC_pos", "RP_neg", "RP_pos") 
-
-volcano_results_list <- vector("list")
-
-volcano_results <- list.files(volcano_dir,
-                              pattern = "volcano_df",
-                              full.names = TRUE)
-
-annot_2026 <- glue::glue("{met_data_dir}JC_annotations/2026-05-28_combined_heu_annotations_authlib_csm_srm_l2_l4.csv") %>% 
-  read.csv(., row.names = 1) %>%
-  dplyr::rename(feature_id = id)
-
-for(m in modes){
-  
-  this_annots26 <- annot_2026 %>%
-    dplyr::filter(mode == m) %>%
-    dplyr::rename_with(~ paste0("2026_", .), .cols = -feature_id)
-  
-  this_m_volcano_results <- grep(m, volcano_results)
-  
-  for(i in this_m_volcano_results){
-    
-    volcano_res <- read.csv(volcano_results[i], row.names = 1) %>%
-      dplyr::left_join(., this_annots26) %>%
-      arrange(pvalue) %>%
-      #dplyr::filter(pvalue < 0.05) %>%
-      mutate(file = basename(volcano_results[i]))
-    
-    volcano_results_list[[basename(volcano_results[i])]] <- volcano_res
-    
-  }
-  
-}
-
-volcano_results_all <- volcano_results_list %>%
-  dplyr::bind_rows() 
-
-volcano_results_df <- volcano_results_list %>%
-  dplyr::bind_rows() %>%
-  dplyr::filter(pvalue_adjusted < 0.01) %>%  
-  mutate(mode = case_when(
-    grepl("RP_neg", file) ~ "RP_neg",
-    grepl("RP_pos", file) ~ "RP_pos",
-    grepl("HILIC_neg", file) ~ "HILIC_neg",
-    grepl("HILIC_pos", file) ~ "HILIC_pos"),
-    origin = ifelse(grepl("Cord", file), "Cord", "Maternal")
-  )
-
-volcano_results_df_anot <- volcano_results_df %>%
-  dplyr::filter(!is.na(annotation) & !is.na('2026_lib_name')) %>%
-  dplyr::select(feature_id, pvalue, pvalue_adjusted, log2fc, annotation,
-                '2026_lib_id', '2026_lib_name', '2026_anot_level',
-                mode)  %>%
-  dplyr::rename(josh_annotation = annotation) %>%
-  dplyr::mutate(josh_anot_level = gsub(".*_", "", josh_annotation))
-
-volcano_results_df_anot_l2 <- volcano_results_df_anot %>%
-  dplyr::filter(josh_anot_level %in% c("L0", "L1", "L2", "CSM"))
-
-write.csv(volcano_results_df_anot,
-          glue::glue("{volcano_dir}{Sys.Date()}_updated_annotation_volcano_results_allmodes.csv"))
-
-```
-
 ### Steroids/Hormones
 
 ```{r}
@@ -1294,15 +1224,15 @@ steroids <- c("estradiol", "pregnen", "pregnan",
                         "sterone", "dione", "etriol")
 
 steroid_anots <- volcano_results_df %>%
-  dplyr::filter(grepl(paste0(steroids, collapse = "|"), tolower(`2026_lib_name`))) %>%
+  dplyr::filter(grepl(paste0(steroids, collapse = "|"), tolower(`lib_name`))) %>%
   dplyr::select(feature_id, 
-         `2026_lib_name`,
-         `2026_anot_level`,
+         `lib_name`,
+         `anot_level`,
          mode,
          origin) %>% 
-  dplyr::filter(`2026_anot_level` != "L4") %>%
-  dplyr::rename(annotation = `2026_lib_name`) %>%
-  dplyr::select(-`2026_anot_level`)
+  dplyr::filter(`anot_level` != "L4") %>%
+  dplyr::rename(annotation = `lib_name`) %>%
+  dplyr::select(-`anot_level`)
 
 plot_series(steroid_anots,
             output_dir,
@@ -1323,15 +1253,15 @@ dir.create(cholesterol_dir)
 cholesterols <- c("cholesterol", "cholesteryl")
 
 cholesterols_anots <- volcano_results_df %>%
-  filter(grepl(paste0(cholesterols, collapse = "|"), tolower(`2026_lib_name`))) %>%
+  filter(grepl(paste0(cholesterols, collapse = "|"), tolower(`lib_name`))) %>%
   select(feature_id, 
-         `2026_lib_name`,
-         `2026_anot_level`,
+         `lib_name`,
+         `anot_level`,
          mode,
          origin) %>% 
-  dplyr::filter(`2026_anot_level` != "L4") %>%
-  dplyr::rename(annotation = `2026_lib_name`) %>%
-  dplyr::select(-`2026_anot_level`)
+  dplyr::filter(`anot_level` != "L4") %>%
+  dplyr::rename(annotation = `lib_name`) %>%
+  dplyr::select(-`anot_level`)
 
 plot_series(cholesterols_anots,
             output_dir,
@@ -1352,15 +1282,15 @@ dir.create(cortisone_dir)
 cortisones <- c("cortiso")
 
 cortisones_anots <- volcano_results_df %>%
-  filter(grepl(paste0(cortisones, collapse = "|"), tolower(`2026_lib_name`))) %>%
+  filter(grepl(paste0(cortisones, collapse = "|"), tolower(`lib_name`))) %>%
   select(feature_id, 
-         `2026_lib_name`,
-         `2026_anot_level`,
+         `lib_name`,
+         `anot_level`,
          mode,
          origin) %>% 
-  dplyr::filter(`2026_anot_level` != "L4") %>%
-  dplyr::rename(annotation = `2026_lib_name`) %>%
-  dplyr::select(-`2026_anot_level`)
+  dplyr::filter(`anot_level` != "L4") %>%
+  dplyr::rename(annotation = `lib_name`) %>%
+  dplyr::select(-`anot_level`)
 
 plot_series(cortisones_anots,
             output_dir,
@@ -1380,15 +1310,15 @@ dir.create(biles_dir)
 biles <- c("bilirubin", "biliverdin", "stercobilin")
 
 biles_anots <- volcano_results_df %>%
-  filter(grepl(paste0(biles, collapse = "|"), tolower(`2026_lib_name`))) %>%
+  filter(grepl(paste0(biles, collapse = "|"), tolower(`lib_name`))) %>%
   select(feature_id, 
-         `2026_lib_name`,
-         `2026_anot_level`,
+         `lib_name`,
+         `anot_level`,
          mode,
          origin) %>% 
-  dplyr::filter(`2026_anot_level` != "L4") %>%
-  dplyr::rename(annotation = `2026_lib_name`) %>%
-  dplyr::select(-`2026_anot_level`)
+  dplyr::filter(`anot_level` != "L4") %>%
+  dplyr::rename(annotation = `lib_name`) %>%
+  dplyr::select(-`anot_level`)
 
 plot_series(biles_anots,
             output_dir,
@@ -1409,15 +1339,15 @@ dir.create(bile_acids_dir)
 bile_acids <- c("cholic")
 
 bile_acids_anots <- volcano_results_df %>%
-  filter(grepl(paste0(bile_acids, collapse = "|"), tolower(`2026_lib_name`))) %>%
+  filter(grepl(paste0(bile_acids, collapse = "|"), tolower(`lib_name`))) %>%
   select(feature_id, 
-         `2026_lib_name`,
-         `2026_anot_level`,
+         `lib_name`,
+         `anot_level`,
          mode,
          origin) %>% 
-  dplyr::filter(`2026_anot_level` != "L4") %>%
-  dplyr::rename(annotation = `2026_lib_name`) %>%
-  dplyr::select(-`2026_anot_level`)
+  dplyr::filter(`anot_level` != "L4") %>%
+  dplyr::rename(annotation = `lib_name`) %>%
+  dplyr::select(-`anot_level`)
 
 plot_series(bile_acids_anots,
             output_dir,
@@ -1433,18 +1363,19 @@ plot_series(bile_acids_anots,
 trp_dir <- glue::glue("{bp_dir}tryptophan/")
 dir.create(trp_dir)
 
-trp_substrates <- c("tryptophan", "kynur", "indole")
+trp_substrates <- c("tryptophan", "kynur", "indole", 
+                    "melatonin")
 
 trp_anots <- volcano_results_df %>%
-  filter(grepl(paste0(trp_substrates, collapse = "|"), tolower(`2026_lib_name`))) %>%
+  filter(grepl(paste0(trp_substrates, collapse = "|"), tolower(`lib_name`))) %>%
   select(feature_id, 
-         `2026_lib_name`,
-         `2026_anot_level`,
+         `lib_name`,
+         `anot_level`,
          mode,
          origin) %>% 
-  dplyr::filter(`2026_anot_level` != "L4") %>%
-  dplyr::rename(annotation = `2026_lib_name`) %>%
-  dplyr::select(-`2026_anot_level`)
+  dplyr::filter(`anot_level` != "L4") %>%
+  dplyr::rename(annotation = `lib_name`) %>%
+  dplyr::select(-`anot_level`)
 
 plot_series(trp_anots,
             output_dir,
@@ -1458,21 +1389,23 @@ plot_series(trp_anots,
 
 ```{r}
 
-sugars <- c("Glucuronic acid", "Galactitol", "N-Acetylgalactosamine 4-sulphate", "cyclamate") %>% tolower()
+sugars <- c("Glucuronic acid", "Galactitol", 
+            "N-Acetylgalactosamine 4-sulphate", "cyclamate",
+            "Ribose", "Arabitol", "Xylitol", "myo-Inositol") %>% tolower()
 
 sugars_dir <- glue::glue("{bp_dir}sugars/")
 dir.create(sugars_dir)
 
 sugars_anots <- volcano_results_df %>%
-  filter(grepl(paste0(sugars, collapse = "|"), tolower(`2026_lib_name`))) %>%
+  filter(grepl(paste0(sugars, collapse = "|"), tolower(`lib_name`))) %>%
   select(feature_id, 
-         `2026_lib_name`,
-         `2026_anot_level`,
+         `lib_name`,
+         `anot_level`,
          mode,
          origin) %>% 
-  dplyr::filter(`2026_anot_level` != "L4") %>%
-  dplyr::rename(annotation = `2026_lib_name`) %>%
-  dplyr::select(-`2026_anot_level`)
+  dplyr::filter(`anot_level` != "L4") %>%
+  dplyr::rename(annotation = `lib_name`) %>%
+  dplyr::select(-`anot_level`)
 
 plot_series(sugars_anots,
             output_dir,
@@ -1495,15 +1428,15 @@ pufa_substrates <- c("linoleic", "linolenic",
                      "eicosatrienoic")
 
 pufas_anots <- volcano_results_df %>%
-  filter(grepl(paste0(pufa_substrates, collapse = "|"), tolower(`2026_lib_name`))) %>%
+  filter(grepl(paste0(pufa_substrates, collapse = "|"), tolower(`lib_name`))) %>%
   select(feature_id, 
-         `2026_lib_name`,
-         `2026_anot_level`,
+         `lib_name`,
+         `anot_level`,
          mode,
          origin) %>% 
-  dplyr::filter(`2026_anot_level` != "L4") %>%
-  dplyr::rename(annotation = `2026_lib_name`) %>%
-  dplyr::select(-`2026_anot_level`)
+  dplyr::filter(`anot_level` != "L4") %>%
+  dplyr::rename(annotation = `lib_name`) %>%
+  dplyr::select(-`anot_level`)
 
 plot_series(pufas_anots,
             output_dir,
@@ -1537,15 +1470,15 @@ neuro_substrates <- c("dopamine", "dopa",
                       "tyrosine")
 
 neuro_anots <- volcano_results_nt %>%
-  filter(grepl(paste0(neuro_substrates, collapse = "|"), tolower(`2026_lib_name`))) %>%
+  filter(grepl(paste0(neuro_substrates, collapse = "|"), tolower(`lib_name`))) %>%
   select(feature_id, 
-         `2026_lib_name`,
-         `2026_anot_level`,
+         `lib_name`,
+         `anot_level`,
          mode,
          origin) %>% 
-  dplyr::filter(`2026_anot_level` != "L4") %>%
-  dplyr::rename(annotation = `2026_lib_name`) %>%
-  dplyr::select(-`2026_anot_level`)
+  dplyr::filter(`anot_level` != "L4") %>%
+  dplyr::rename(annotation = `lib_name`) %>%
+  dplyr::select(-`anot_level`)
 
 plot_series(neuro_anots,
             output_dir,
@@ -1565,15 +1498,15 @@ sulfate_dir <- glue::glue("{bp_dir}sulfate/")
 dir.create(sulfate_dir)
 
 sulf_anots <- volcano_results_df %>%
-  filter(grepl("sulfate", tolower(`2026_lib_name`))) %>%
+  filter(grepl("sulfate", tolower(`lib_name`))) %>%
   select(feature_id, 
-         `2026_lib_name`,
-         `2026_anot_level`,
+         `lib_name`,
+         `anot_level`,
          mode,
          origin) %>% 
-  dplyr::filter(`2026_anot_level` != "L4") %>%
-  dplyr::rename(annotation = `2026_lib_name`) %>%
-  dplyr::select(-`2026_anot_level`)
+  dplyr::filter(`anot_level` != "L4") %>%
+  dplyr::rename(annotation = `lib_name`) %>%
+  dplyr::select(-`anot_level`)
 
 plot_series(sulf_anots,
             output_dir,
@@ -1717,8 +1650,11 @@ this_metadata <- list.files(this_met_output_dir,
   mutate(who = ifelse(origin == "Maternal", "Maternal", "Cord"),
          plot_group = paste0(who, "_", status))
 
-kp_df <- glue::glue("{this_met_output_dir}{m}_kp_df_anot.csv") %>%
-  read.csv(., row.names = 1)
+kp_path <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{m}_empirical_compounds.csv")
+    
+kp_df <- read.csv(kp_path) %>%
+  dplyr::left_join(., annot_2026 %>% dplyr::select(-c(mz, rtime)), 
+                   by = join_by(id == feature_id))
 
 # Efavirenz_L2
 
@@ -1729,14 +1665,13 @@ for(who in c("Maternal", "Cord")){
   volcano_df <- volcano_results_df %>%
     dplyr::filter(mode == m) %>%
     dplyr::filter(origin == who) %>%
-    dplyr::filter(grepl("efavirenz", tolower(`2026_lib_name`))) %>%
-  select(feature_id, 
-         `2026_lib_name`,
-         `2026_anot_level`,
+    dplyr::filter(grepl("efavirenz", tolower(annotation))) %>%
+    dplyr::select(feature_id, 
+         annotation,
+         `anot_level`,
          mode,
          origin) %>% 
-  dplyr::rename(annotation = `2026_lib_name`) %>%
-  dplyr::select(-`2026_anot_level`) %>%
+    dplyr::select(-`anot_level`) %>%
     dplyr::filter(feature_id %in% rpneg_matches$id)
   
   for(this_feat in volcano_df$feature_id){
@@ -1745,7 +1680,7 @@ for(who in c("Maternal", "Cord")){
                         n_top = 5,
                         this_ft_tbl,
                         this_metadata %>% filter(origin == who),
-                        kp_df,
+                        kp_df %>% dplyr::rename(annotation = 'lib_name'),
                         m,
                         who,
                         efa_dir,
@@ -1769,15 +1704,15 @@ for(who in c("Maternal", "Cord")){
   
   ef_df <- who_ft_tbl %>%
     as.data.frame() %>%
-    select(efa_ft, hyroxy_ft)
+    dplyr::select(efa_ft, hyroxy_ft)
   
   ef_df_list[[who]] <- ef_df
   
   efa_ft_info <- kp_df %>%
-    filter(id == efa_ft)
+    dplyr::filter(id == efa_ft)
   
   hydroxy_ft_info <- kp_df %>%
-    filter(id == hyroxy_ft)
+    dplyr::filter(id == hyroxy_ft)
   
   efa_cor <- cor.test(ef_df[[efa_ft]], ef_df[[hyroxy_ft]])
   
@@ -1793,7 +1728,7 @@ for(who in c("Maternal", "Cord")){
                 color = "black",
                 linewidth = 0.7) +
     xlab(glue::glue("Efavirenz\n{efa_ft} - {round(efa_ft_info$mz, digits=4)} m/z @ {efa_ft_info$rtime}s")) +
-    ylab(glue::glue("{hydroxy_ft_info %>% pull(annotation)}\n{hyroxy_ft} - {round(hydroxy_ft_info$mz, digits=4)} m/z @ {hydroxy_ft_info$rtime}s")) +
+    ylab(glue::glue("{hydroxy_ft_info %>% pull(lib_name)}\n{hyroxy_ft} - {round(hydroxy_ft_info$mz, digits=4)} m/z @ {hydroxy_ft_info$rtime}s")) +
     theme_classic() +
     labs(
       title = glue::glue("ρ in {who}: {round(efa_cor$estimate, digits = 2)}")
@@ -1822,6 +1757,16 @@ metabolite_pattern = "efavirenz"
 pval_thresh = 0.05
 fc_thresh = 1
 
+volcano_results_all <- volcano_results_list %>%
+  dplyr::bind_rows() %>%
+  mutate(mode = case_when(
+    grepl("RP_neg", file) ~ "RP_neg",
+    grepl("RP_pos", file) ~ "RP_pos",
+    grepl("HILIC_neg", file) ~ "HILIC_neg",
+    grepl("HILIC_pos", file) ~ "HILIC_pos"),
+    origin = ifelse(grepl("Cord", file), "Cord", "Maternal")
+  )
+
 for(who in c("Cord", "Maternal")){
   
   all_res_df <- volcano_results_all %>%
@@ -1836,7 +1781,7 @@ for(who in c("Cord", "Maternal")){
   
   all_res_df <- all_res_df %>%
     mutate(
-      highlighted_met = ifelse(grepl(metabolite_pattern, tolower(`2026_lib_name`)), `2026_lib_name`, NA),
+      highlighted_met = ifelse(grepl(metabolite_pattern, tolower(`lib_name`)), `lib_name`, NA),
       markers_plot = ifelse(important != "No Change", highlighted_met, NA))
   
   color_pal <- c("#FF7E70", "#00A5A0", "#D8BB64", "grey")
@@ -2121,9 +2066,6 @@ upset_df <- list(Efavirenz_Correlated_M = efa_cors$Maternal %>%
                    pull(feature_id))
 
 both_c <- intersect(upset_df$Efavirenz_Correlated_C, upset_df$HEU_Significant_C)
-
-both_c_anot <- volcano_results_df_anot_l2 %>%
-  dplyr::filter(feature_id %in% both_c)
 
 upset_m = make_comb_mat(upset_df, mode = "intersect")
 upset_m_filt <- upset_m[comb_degree(upset_m) > 1]
