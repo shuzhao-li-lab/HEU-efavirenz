@@ -109,15 +109,18 @@ for(m in modes){
       filter(ion_relation == "M0,M-H-")
   }
   
+  this_annot_2026 <- annot_2026 %>%
+    dplyr::filter(mode == m)
+  
   # add efavirenz
-  efz_fts <- annot_2026 %>%
+  efz_fts <- this_annot_2026 %>%
     filter(grepl("efavirenz", tolower(lib_name)))
   
   kp_df_df_filt <- kp_df_df_filt %>%
     dplyr::bind_rows(.,
                      kp_df %>%
     dplyr::filter(id %in% efz_fts$id_number)) %>%
-    dplyr::left_join(., annot_2026,
+    dplyr::left_join(., this_annot_2026,
                      by = join_by(id == feature_id)) %>%
     # Could be duplicates
     dplyr::distinct()
@@ -173,7 +176,7 @@ for(m in modes){
 
   write.csv(meta_df, glue::glue("{this_met_output_dir}{m}_metadata.csv"))
 
-  write.csv(annot_2026 %>%
+  write.csv(this_annot_2026 %>%
               dplyr::filter(feature_id %in% rownames(filtered_df_tbl_t)), 
             glue::glue("{this_met_output_dir}{m}_annotations.csv"))
   
@@ -203,6 +206,12 @@ plot_boxplot_series <- function(top_volcano_ft,
                                 nrow_facet = 1,
                                 width = 7,
                                 height = 2.5){
+  
+  plot_m <- stringr::str_replace_all(m, 
+                                     c("HILIC_neg" = "HILIC (-)",
+                                       "HILIC_pos" = "HILIC (+)",
+                                       "RP_neg"    = "RP (-)",
+                                       "RP_pos"    = "RP (+)"))
 
   if(analysis == "volcano"){
     
@@ -214,10 +223,10 @@ plot_boxplot_series <- function(top_volcano_ft,
     # focus on high-confidence features
     dplyr::filter(!is.na(mz) | grepl("efavirenz", tolower(annotation))) %>%
     dplyr::mutate(plot_name = gsub("_.*", "", annotation),
-           plot_name = glue::glue("{stringr::str_trunc(plot_name, width = 20)}\n{round(mz, 4)}@{rtime}\n{m}")) %>%
+                  plot_name = gsub(";.*", "", plot_name),
+                  plot_name = stringr::str_to_title(plot_name),
+           plot_name = glue::glue("{stringr::str_trunc(plot_name, width = 25)}\n{round(mz, 4)} @ {rtime} | {plot_m} \nFDR = {sprintf('%.2e', pvalue_adjusted)}")) %>%
     dplyr::slice_head(n = n_top)
-    
-    print(head(top_features))
     
   }else if(analysis == "single"){
     
@@ -228,7 +237,9 @@ plot_boxplot_series <- function(top_volcano_ft,
                         dplyr::select(-annotation),
                      by = join_by(feature_id == id)) %>%
     dplyr::mutate(plot_name = gsub("_.*", "", annotation),
-           plot_name = glue::glue("{stringr::str_trunc(plot_name, width = 20)}\n{round(mz, 4)}@{rtime}\n{m}")) 
+                  plot_name = gsub(";.*", "", plot_name),
+                  plot_name = stringr::str_to_title(plot_name),
+           plot_name = glue::glue("{stringr::str_trunc(plot_name, width = 25)}\n{round(mz, 4)} @ {rtime} | {plot_m}\nFDR = {sprintf('%.2e', pvalue_adjusted)}")) 
     
   }else if(analysis == "series"){
     
@@ -237,10 +248,10 @@ plot_boxplot_series <- function(top_volcano_ft,
                        dplyr::select(-annotation) %>%
                        tibble::rownames_to_column(., "feature_id")) %>%
     dplyr::mutate(plot_name = gsub("_.*", "", annotation),
-           plot_name = glue::glue("{stringr::str_trunc(plot_name, width = 20)}\n{round(mz, 4)}@{rtime}\n{m}")) %>%
+                  plot_name = gsub(";.*", "", plot_name),
+                  plot_name = stringr::str_to_title(plot_name),
+           plot_name = glue::glue("{stringr::str_trunc(plot_name, width = 25)}\n{round(mz, 4)} @ {rtime} | {plot_m}\nFDR = {sprintf('%.2e', pvalue_adjusted)}")) %>%
     dplyr::slice_head(n = n_top)
-    
-    print(head(top_features))
     
   }
   
@@ -981,13 +992,8 @@ plot_series <- function(steroid_substrates_anots,
     
     kp_df <- read.csv(kp_path) %>%
       dplyr::mutate(annotation = NA)
-    # 
-    # kp_df <- glue::glue("{this_met_output_dir}{this_m}_kp_df_anot.csv") %>%
-    #   read.csv(., row.names = 1)
     
     rownames(kp_df) <- kp_df$id
-    
-    print(head(kp_df))
     
     these_steroids <- steroid_substrates_anots %>%
       dplyr::filter(mode == this_m)
@@ -1026,8 +1032,6 @@ plot_series <- function(steroid_substrates_anots,
       for(j in 1:nrow(these_feats)){
       
       this_top_ft <- these_feats[j,]$feature_id
-      
-      print(these_feats)
       
       plot_boxplot_series(these_feats,
                         n_top = 5,
@@ -1229,7 +1233,8 @@ steroid_anots <- volcano_results_df %>%
          `lib_name`,
          `anot_level`,
          mode,
-         origin) %>% 
+         origin,
+         pvalue_adjusted) %>% 
   dplyr::filter(`anot_level` != "L4") %>%
   dplyr::rename(annotation = `lib_name`) %>%
   dplyr::select(-`anot_level`)
@@ -1258,7 +1263,8 @@ cholesterols_anots <- volcano_results_df %>%
          `lib_name`,
          `anot_level`,
          mode,
-         origin) %>% 
+         origin,
+         pvalue_adjusted) %>% 
   dplyr::filter(`anot_level` != "L4") %>%
   dplyr::rename(annotation = `lib_name`) %>%
   dplyr::select(-`anot_level`)
@@ -1287,7 +1293,8 @@ cortisones_anots <- volcano_results_df %>%
          `lib_name`,
          `anot_level`,
          mode,
-         origin) %>% 
+         origin,
+         pvalue_adjusted) %>% 
   dplyr::filter(`anot_level` != "L4") %>%
   dplyr::rename(annotation = `lib_name`) %>%
   dplyr::select(-`anot_level`)
@@ -1315,7 +1322,8 @@ biles_anots <- volcano_results_df %>%
          `lib_name`,
          `anot_level`,
          mode,
-         origin) %>% 
+         origin,
+         pvalue_adjusted) %>% 
   dplyr::filter(`anot_level` != "L4") %>%
   dplyr::rename(annotation = `lib_name`) %>%
   dplyr::select(-`anot_level`)
@@ -1344,7 +1352,8 @@ bile_acids_anots <- volcano_results_df %>%
          `lib_name`,
          `anot_level`,
          mode,
-         origin) %>% 
+         origin,
+         pvalue_adjusted) %>% 
   dplyr::filter(`anot_level` != "L4") %>%
   dplyr::rename(annotation = `lib_name`) %>%
   dplyr::select(-`anot_level`)
@@ -1372,7 +1381,8 @@ trp_anots <- volcano_results_df %>%
          `lib_name`,
          `anot_level`,
          mode,
-         origin) %>% 
+         origin,
+         pvalue_adjusted) %>% 
   dplyr::filter(`anot_level` != "L4") %>%
   dplyr::rename(annotation = `lib_name`) %>%
   dplyr::select(-`anot_level`)
@@ -1402,7 +1412,8 @@ sugars_anots <- volcano_results_df %>%
          `lib_name`,
          `anot_level`,
          mode,
-         origin) %>% 
+         origin,
+         pvalue_adjusted) %>% 
   dplyr::filter(`anot_level` != "L4") %>%
   dplyr::rename(annotation = `lib_name`) %>%
   dplyr::select(-`anot_level`)
@@ -1433,7 +1444,8 @@ pufas_anots <- volcano_results_df %>%
          `lib_name`,
          `anot_level`,
          mode,
-         origin) %>% 
+         origin,
+         pvalue_adjusted) %>% 
   dplyr::filter(`anot_level` != "L4") %>%
   dplyr::rename(annotation = `lib_name`) %>%
   dplyr::select(-`anot_level`)
@@ -1475,7 +1487,8 @@ neuro_anots <- volcano_results_nt %>%
          `lib_name`,
          `anot_level`,
          mode,
-         origin) %>% 
+         origin,
+         pvalue_adjusted) %>% 
   dplyr::filter(`anot_level` != "L4") %>%
   dplyr::rename(annotation = `lib_name`) %>%
   dplyr::select(-`anot_level`)
@@ -1503,7 +1516,8 @@ sulf_anots <- volcano_results_df %>%
          `lib_name`,
          `anot_level`,
          mode,
-         origin) %>% 
+         origin,
+         pvalue_adjusted) %>% 
   dplyr::filter(`anot_level` != "L4") %>%
   dplyr::rename(annotation = `lib_name`) %>%
   dplyr::select(-`anot_level`)
@@ -1653,7 +1667,9 @@ this_metadata <- list.files(this_met_output_dir,
 kp_path <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{m}_empirical_compounds.csv")
     
 kp_df <- read.csv(kp_path) %>%
-  dplyr::left_join(., annot_2026 %>% dplyr::select(-c(mz, rtime)), 
+  dplyr::left_join(., annot_2026 %>%
+                     dplyr::filter(mode == m) %>% 
+                     dplyr::select(-c(mz, rtime)), 
                    by = join_by(id == feature_id))
 
 # Efavirenz_L2
@@ -1670,7 +1686,8 @@ for(who in c("Maternal", "Cord")){
          annotation,
          `anot_level`,
          mode,
-         origin) %>% 
+         origin,
+         pvalue_adjusted) %>% 
     dplyr::select(-`anot_level`) %>%
     dplyr::filter(feature_id %in% rpneg_matches$id)
   
@@ -1759,13 +1776,14 @@ fc_thresh = 1
 
 volcano_results_all <- volcano_results_list %>%
   dplyr::bind_rows() %>%
-  mutate(mode = case_when(
+  dplyr::mutate(mode = case_when(
     grepl("RP_neg", file) ~ "RP_neg",
     grepl("RP_pos", file) ~ "RP_pos",
     grepl("HILIC_neg", file) ~ "HILIC_neg",
     grepl("HILIC_pos", file) ~ "HILIC_pos"),
     origin = ifelse(grepl("Cord", file), "Cord", "Maternal")
-  )
+  ) %>%
+  dplyr::filter(mode %in% all_matches$mode)
 
 for(who in c("Cord", "Maternal")){
   
@@ -1779,9 +1797,12 @@ for(who in c("Cord", "Maternal")){
     ) %>%
     dplyr::filter(mode == m & origin == who) 
   
+  legit_matches <- all_matches %>%
+    dplyr::filter(mode == m)
+  
   all_res_df <- all_res_df %>%
-    mutate(
-      highlighted_met = ifelse(grepl(metabolite_pattern, tolower(`lib_name`)), `lib_name`, NA),
+    dplyr::mutate(
+      highlighted_met = ifelse(feature_id %in% legit_matches$id, `lib_name`, NA),
       markers_plot = ifelse(important != "No Change", highlighted_met, NA))
   
   color_pal <- c("#FF7E70", "#00A5A0", "#D8BB64", "grey")
@@ -1810,7 +1831,7 @@ for(who in c("Cord", "Maternal")){
                        guide = "none") +
     labs(
       x = "Log2 Fold Change",
-      y = "-Log10 (BH adjusted TT p-value)"
+      y = "-Log10 (FDR adjusted TT p-value)"
     ) +
     theme(
       text = element_text(family = "Arial"),
@@ -1821,7 +1842,7 @@ for(who in c("Cord", "Maternal")){
       strip.text = element_text(size = 11),
       panel.grid = element_blank()) +
     coord_cartesian(xlim = c(-max_x, max_x)) +
-    ggtitle(glue::glue("{m} HUU vs HEU {who} - BH < {pval_thresh}")) +
+    ggtitle(glue::glue("{m} HUU vs HEU {who} - FDR < {pval_thresh}")) +
     geom_text_repel(
       na.rm = TRUE,
       size = 3.5,
@@ -1848,15 +1869,16 @@ mom_efa <- ef_df_list$Maternal %>%
   dplyr::rename_with(~ paste0(., "_M")) %>%
   tibble::rownames_to_column(., "sample_name") %>%
   dplyr::left_join(., this_metadata %>%
-                     mutate(dyad_id = gsub("_.*", "", Sample_ID)) %>%
-                     select(sample_name, dyad_id))
+                     dplyr::mutate(dyad_id = gsub("_.*", "", Sample_ID)) %>%
+                     dplyr::select(sample_name, dyad_id, status)) %>% 
+  dplyr::filter(status == "HEU")
 
 cord_efa <- ef_df_list$Cord %>%
   dplyr::rename_with(~ paste0(., "_C")) %>%
   tibble::rownames_to_column(., "sample_name") %>%
   dplyr::left_join(., this_metadata %>%
-                     mutate(dyad_id = gsub("_.*", "", Sample_ID)) %>%
-                     select(sample_name, dyad_id)) %>%
+                     dplyr::mutate(dyad_id = gsub("_.*", "", Sample_ID)) %>%
+                     dplyr::select(sample_name, dyad_id)) %>%
   dplyr::select(-sample_name) %>%
   dplyr::left_join(., mom_efa %>% select(-sample_name)) %>%
   dplyr::filter(complete.cases(.))
@@ -1882,11 +1904,11 @@ for(this_feat in c(hyroxy_ft, efa_ft)){
                 se = FALSE,
                 color = "black",
                 linewidth = 0.7) +
-    xlab(glue::glue("Maternal")) +
-    ylab(glue::glue("Cord")) +
+    xlab(glue::glue("HEU Maternal")) +
+    ylab(glue::glue("HEU Cord")) +
     theme_classic() +
     labs(
-      title = glue::glue("ρ: {round(efa_cor_mb$estimate, digits = 2)}\n{ft_info$annotation}\n{ft_info$mz} @ {round(ft_info$rtime, 2)}")
+      title = glue::glue("ρ: {round(efa_cor_mb$estimate, digits = 2)}\n{ft_info$lib_name}\n{ft_info$mz} m/z @ {round(ft_info$rtime, 2)}s")
     ) +
     theme(
       text = element_text(family = "Arial"),
@@ -1918,24 +1940,24 @@ for(this_who in c("Maternal", "Cord")){
   
   this_ef_df <- this_ft_tbl %>%
     as.data.frame() %>%
-    select(efa_ft, hyroxy_ft) %>%
+    dplyr::select(efa_ft, hyroxy_ft) %>%
     tibble::rownames_to_column(.) %>%
     dplyr::rename(sample_name = rowname) %>%
-    filter(sample_name %in% 
+    dplyr::filter(sample_name %in% 
            (this_metadata %>% 
-           filter(origin == this_who) %>% 
+           filter(origin == this_who & status == "HEU") %>% 
            pull(sample_name))) %>%
-    select(F29911) 
+    dplyr::select(F29911) 
   
   other_ft_df <- this_ft_tbl %>%
     as.data.frame() %>%
     tibble::rownames_to_column(.) %>%
     dplyr::rename(sample_name = rowname) %>%
-    filter(sample_name %in% 
+    dplyr::filter(sample_name %in% 
              (this_metadata %>% 
-                filter(origin == this_who) %>% 
+                filter(origin == this_who & status == "HEU") %>% 
                 pull(sample_name))) %>%
-    select(-c(efa_ft, sample_name)) 
+    dplyr::select(-c(efa_ft, sample_name)) 
   
   # correlations (vector)
   cors <- cor(this_ef_df, other_ft_df, use="pairwise.complete.obs")
@@ -1966,16 +1988,16 @@ for(this_who in c("Maternal", "Cord")){
     read.csv(., row.names = 1)
 
   both_df <- dplyr::bind_rows(cor_results %>%
-                                select(feature_id, pvalue_adjusted) %>%
-                                mutate(type = "Features correlated with Efavirenz"),
+                                dplyr::select(feature_id, pvalue_adjusted) %>%
+                                dplyr::mutate(type = "Features correlated with Efavirenz in HEU"),
                               volcano_df %>%
-                                select(feature_id, pvalue_adjusted) %>%
-                                mutate(type = "Features significantly different between HUU/HEU")) %>%
-    mutate(significant = pvalue_adjusted < 0.01) %>%
-    group_by(feature_id) %>%
-    mutate(count = sum(significant, na.rm = TRUE)) %>%
-    ungroup() %>%
-    mutate(shape = (count == 2)) %>%
+                                dplyr::select(feature_id, pvalue_adjusted) %>%
+                                dplyr::mutate(type = "Features significantly different between HUU/HEU")) %>%
+    dplyr::mutate(significant = pvalue_adjusted < 0.01) %>%
+    dplyr::group_by(feature_id) %>%
+    dplyr::mutate(count = sum(significant, na.rm = TRUE)) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(shape = (count == 2)) %>%
     dplyr::left_join(., all_kp %>%
                        mutate(feature_id = rownames(all_kp)) %>%
                        select(feature_id, mz, rtime))
@@ -2017,7 +2039,7 @@ for(this_who in c("Maternal", "Cord")){
       x = "Retention Time (seconds)",
       y = "-log10 Adjusted p-value",
       color = "Found in both",
-      title = glue::glue("{this_who} ρ BH < 0.01")
+      title = glue::glue("{this_who} ρ FDR < 0.01")
     ) +
     geom_hline(yintercept = -log10(0.01),
                linetype = "dashed")
