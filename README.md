@@ -28,8 +28,7 @@ All steps are described under `notebooks/`, using shell or R scripts, notebooks 
 ```
 
 ## Data Availability: 	
-The input data (metabolomics and meta data) used in this project are available on Zenodo (DOI 10.5281/zenodo.21827608) and as release on this repo:
-https://github.com/shuzhao-li-lab/HEU-efavirenz/releases/download/v1.0-data/2026_07_30_HEU_Metabolomics_DataFreeze.zip
+The input data (metabolomics and meta data) used in this project are available on Zenodo (DOI 10.5281/zenodo.21827608) and as release on this repo: https://github.com/shuzhao-li-lab/HEU-efavirenz/releases/download/v1.0-data/data-release-20260812_HEU_Metabolomics.zip
 
 ## Citation
 To come.
