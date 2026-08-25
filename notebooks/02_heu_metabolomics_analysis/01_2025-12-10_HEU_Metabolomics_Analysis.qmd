@@ -58,14 +58,19 @@ for(m in modes){
 
   ft_tbl <- readr::read_tsv(ft_tbl_path)
   
-  if(m == "RP_neg"){
+  if(m %in% c("RP_neg", "HILIC_neg")){
     
     ft_tbl_path_full <- glue::glue("{met_data_dir}/12_03_2025_final_feature_tables/{m}_final_table.tsv")
     
     ft_tbl_final <- readr::read_tsv(ft_tbl_path_full)
     
-    efa_ft <- "F29911"
-    hyroxy_ft <- "F21642"
+    if(m == "RP_neg"){
+      efa_ft <- "F29911"
+      hydroxy_ft <- "F21642"
+    }else if(m == "HILIC_neg"){
+      hydroxy_ft <- "F75146"
+      efa_ft <- "F67108"
+    }
     
     if(!efa_ft %in% ft_tbl$id_number){
       
@@ -74,10 +79,10 @@ for(m in modes){
       
     }
     
-    if(!hyroxy_ft %in% ft_tbl$id_number){
+    if(!hydroxy_ft %in% ft_tbl$id_number){
       
       ft_tbl <- dplyr::bind_rows(ft_tbl,
-                                 ft_tbl_final[ft_tbl_final$id_number == hyroxy_ft,])
+                                 ft_tbl_final[ft_tbl_final$id_number == hydroxy_ft,])
       
     }
     
@@ -1140,80 +1145,6 @@ for(m in modes){
 
 ```
 
-## Mummichog
-
-Below just for RPneg.
-
-```{r}
-
-mum_output_dir <- glue::glue("{figure2_dir}mummichog/")
-dir.create(mum_output_dir)
-
-mum_results_path <- glue::glue("{met_data_dir}SL_mummichog/")
-
-mummichog_results <- list.files(path = mum_results_path,
-                                recursive = TRUE,
-                                pattern = "mcg_pathwayanalysis_mcg_.*\\.xlsx$",
-                                full.names = TRUE) 
-
-m = "RP_neg"
-
-mummichog_results <- mummichog_results[str_detect(mummichog_results, m)] %>%
-  map_dfr(~ readxl::read_excel(.x) %>%
-          mutate(source_file = basename(.x))) %>%
-  dplyr::bind_rows() %>%
-  dplyr::rename(pvalue = 'p-value') %>%
-  group_by(source_file) %>%  
-  mutate(p_adj = p.adjust(pvalue, method = "BH")) %>%
-  ungroup() %>%
-  dplyr::select(pathway, pvalue, p_adj, source_file) %>%
-  dplyr::mutate(test = ifelse(grepl("Efavirenz", source_file), "EFV_Cor", "HEU_HUU"),
-         who = ifelse(grepl("mothers", source_file), "Maternal", "Cord"),
-         group = paste0(who, "\n", test),
-         group = factor(group,
-                        levels = c("Cord\nEFV_Cor", "Cord\nHEU_HUU", 
-                                   "Maternal\nEFV_Cor", "Maternal\nHEU_HUU"))) %>%
-  group_by(pathway) %>%
-  filter(any(pvalue < 0.05, na.rm = TRUE)) %>%
-  ungroup() %>%
-  mutate(logq = -log10(pvalue),
-         is_sig = factor(pvalue < 0.05),
-         pathway = factor(pathway, levels = sort(unique(pathway), decreasing = TRUE)))
-
-# Define shapes and colors
-shapes <- c("FALSE" = 1, "TRUE" = 16)
-colors <- c("FALSE" = "darkgrey", "TRUE" = "black")
-
-# Plot
-p <- ggplot(mummichog_results,
-            aes(x = group, y = pathway)) +
-  geom_point(aes(size = logq, shape = is_sig, color = is_sig)) +  # separate points horizontally for the same pathway
-  scale_shape_manual(values = shapes) +
-  scale_color_manual(values = colors) +
-  scale_size_continuous(range = c(2,6)) +
-  theme_minimal() +
-  guides(
-    color = "none",
-    shape = "none"
-  ) +
-  labs(x = "",
-       y = "Pathway",
-       size = "-log10 P-value",
-       shape = "",
-       color = "") +
-  theme(
-    text = element_text(family = "Arial"),
-    axis.text.y = element_text(size = 10),
-    axis.text.x = element_text(size = 9),
-    axis.title = element_text(size = 10.5),
-    axis.line = element_line(color = "black"))
-
-ggplot2::ggsave(glue::glue("{mum_output_dir}{Sys.Date()}_{m}_mummichog_results_plot_rawp.png"),
-                width = 8,
-                height = 7)
-
-```
-
 ## Metabolite groups of interest
 
 ### Steroids/Hormones
@@ -1448,7 +1379,10 @@ pufas_anots <- volcano_results_df %>%
          pvalue_adjusted) %>% 
   dplyr::filter(`anot_level` != "L4") %>%
   dplyr::rename(annotation = `lib_name`) %>%
-  dplyr::select(-`anot_level`)
+  dplyr::select(-`anot_level`) %>%
+  dplyr::mutate(annotation = ifelse(annotation == "?-linolenic acid",
+                                    "Alpha-Linolenic acid",
+                                    annotation))
 
 plot_series(pufas_anots,
             output_dir,
@@ -1633,8 +1567,10 @@ hilicneg_matches <- ms1_search(khipu_targets %>% dplyr::filter(mode == "HILIC_ne
 rpneg_matches <- ms1_search(khipu_targets %>% dplyr::filter(mode == "RP_neg"),
                             auth_std %>% dplyr::filter(mode == "RP_neg"))
 
-all_matches <- dplyr::bind_rows(hilicneg_matches,
-                                rpneg_matches)
+all_matches <- dplyr::bind_rows(hilicpos_matches,
+                                hilicneg_matches,
+                                rpneg_matches,
+                                rpos_matches)
 
 write.csv(all_matches,
           glue::glue("{results_dir}{Sys.Date()}_efavirenz_auth_std_matches.csv"))
@@ -1926,7 +1862,7 @@ for(this_feat in c(hyroxy_ft, efa_ft)){
 
 ```
 
-### Manhattan - efz cor to other metabolites
+### Manhattan - Correlation of Efavirenz (auth std) to other metabolites
 
 ```{r}
 
@@ -1936,130 +1872,207 @@ group_var = "status"
 
 efa_cors <- vector("list")
 
-for(this_who in c("Maternal", "Cord")){
-  
-  this_ef_df <- this_ft_tbl %>%
-    as.data.frame() %>%
-    dplyr::select(efa_ft, hyroxy_ft) %>%
-    tibble::rownames_to_column(.) %>%
-    dplyr::rename(sample_name = rowname) %>%
-    dplyr::filter(sample_name %in% 
-           (this_metadata %>% 
-           filter(origin == this_who & status == "HEU") %>% 
-           pull(sample_name))) %>%
-    dplyr::select(F29911) 
-  
-  other_ft_df <- this_ft_tbl %>%
-    as.data.frame() %>%
-    tibble::rownames_to_column(.) %>%
-    dplyr::rename(sample_name = rowname) %>%
-    dplyr::filter(sample_name %in% 
-             (this_metadata %>% 
-                filter(origin == this_who & status == "HEU") %>% 
-                pull(sample_name))) %>%
-    dplyr::select(-c(efa_ft, sample_name)) 
-  
-  # correlations (vector)
-  cors <- cor(this_ef_df, other_ft_df, use="pairwise.complete.obs")
-  
-  # sample size (pairwise complete obs)
-  n <- apply(cbind(this_ef_df, other_ft_df), 2, function(col) sum(complete.cases(this_ef_df, col)))[-1]
-  
-  # t-statistics
-  tvals <- cors * sqrt( (n - 2) / (1 - cors^2) )
-  
-  # two-sided p-values
-  pvals <- 2 * pt(-abs(tvals), df = n - 2)
-  
-  # corrected p-values
-  padj <- p.adjust(pvals, method = "BH")
-  
-  # results table
-  cor_results <- data.frame(
-    feature_id = colnames(cors),
-    correlation = cors[1,],
-    pvalue = pvals[1,],
-    pvalue_adjusted = padj
-  ) 
-  
-  volcano_df <- read.csv(glue::glue("{volcano_dir}{results_date}_{m}_{group1}_{group2}_{this_who}_volcano_df.csv"))
+# pull efavirenz from RPneg
+this_ef_df <- this_ft_tbl %>%
+  as.data.frame() %>%
+  dplyr::select(efa_ft, hyroxy_ft) %>%
+  tibble::rownames_to_column(.) %>%
+  dplyr::rename(sample_name = rowname) %>%
+  dplyr::left_join(., this_metadata) %>%
+  dplyr::filter(status == "HEU") %>%
+  dplyr::select(Sample_ID, status, origin, F29911) 
 
-  all_kp <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{m}_empirical_compounds.csv") %>%
-    read.csv(., row.names = 1)
+efv_supp_dir <- glue::glue("{efa_dir}/supplementary_data/")
+dir.create(efv_supp_dir)
 
-  both_df <- dplyr::bind_rows(cor_results %>%
-                                dplyr::select(feature_id, pvalue_adjusted) %>%
-                                dplyr::mutate(type = "Features correlated with Efavirenz in HEU"),
-                              volcano_df %>%
-                                dplyr::select(feature_id, pvalue_adjusted) %>%
-                                dplyr::mutate(type = "Features significantly different between HUU/HEU")) %>%
-    dplyr::mutate(significant = pvalue_adjusted < 0.01) %>%
-    dplyr::group_by(feature_id) %>%
-    dplyr::mutate(count = sum(significant, na.rm = TRUE)) %>%
-    dplyr::ungroup() %>%
-    dplyr::mutate(shape = (count == 2)) %>%
-    dplyr::left_join(., all_kp %>%
-                       mutate(feature_id = rownames(all_kp)) %>%
-                       select(feature_id, mz, rtime))
+efv_supp_dir <- glue::glue("{efa_dir}/supplementary_data/")
+dir.create(efv_supp_dir)
 
-  efa_cors[[this_who]] <- both_df
+for(m in modes){
   
-  cat((sum(both_df$shape)/2), "features out of", nrow(cor_results), "found in both.")
+  cat(m)
   
-  p_efz <- ggplot(both_df %>%
-                    dplyr::filter(rtime < 250) %>%
-                    dplyr::mutate(significant = factor(significant)),
-                  aes(y = -log10(pvalue_adjusted),
-                      x = rtime)) +
-    geom_point(aes(fill = significant,
-                   shape = significant), 
-                size = 2.25,
-               stroke = 0.2,
-               alpha = 0.65) +
-    theme_minimal() +
-    scale_fill_manual(values = c("FALSE" = "darkgrey", "TRUE" = "#D41159"),
-                      guide = "none") +
-    scale_shape_manual(
-      values = c("FALSE" = 21, "TRUE" = 23),
-      guide = "none") +
-    theme(
-      text = element_text(family = "Arial"),
-      axis.text = element_text(size = 9),
-      axis.title.x = element_text(size = 9, margin = margin(t = 2.5)), # reduce space above x-axis title
-      axis.title.y = element_text(size = 9, margin = margin(r = 2.5)), # reduce space right of y-axis title
-      plot.title = element_text(size = 9.5, hjust = 0.5),
-      strip.text = element_text(size = 10, margin = margin(b = 2, t = 2)),
-      strip.background = element_rect(
-        fill = "grey90",     # background color
-        color = "black",     # border color
-        linewidth = 0.5      # border thickness
-      )) +
-    facet_wrap(. ~ type, nrow = 2, scales = "free_y") +
-    labs(
-      x = "Retention Time (seconds)",
-      y = "-log10 Adjusted p-value",
-      color = "Found in both",
-      title = glue::glue("{this_who} ρ FDR < 0.01")
-    ) +
-    geom_hline(yintercept = -log10(0.01),
-               linetype = "dashed")
-
-  ggplot2::ggsave(glue::glue("{efa_dir}{Sys.Date()}_{m}_{this_who}_efavirenz_all_features_correlations.png"),
-                  width = 6.25,
-                  height = 3.5)
+  this_met_output_dir <- glue::glue("{output_dir}{results_date}_{m}/")
   
-  # Save outputs for mummichog
-  cor_results_mummichog <- cor_results %>%
-    dplyr::left_join(., all_kp %>%
-                       mutate(feature_id = rownames(all_kp)) %>%
-                       select(feature_id, mz, rtime)) %>%
-    dplyr::select(mz, rtime, pvalue, correlation, feature_id) %>%
-    dplyr::rename('m/z' = "mz",
-           "retention time" = "rtime",
-           "p-value" = "pvalue",
-           "statistic" = "correlation") %>%
+  this_ft_tbl <- list.files(this_met_output_dir,
+                            pattern = "feature_table",
+                            full.names = TRUE) %>%
+    read.csv(., row.names = 1) %>%
+    t()
+  
+  this_metadata <- list.files(this_met_output_dir,
+                              pattern = "metadata",
+                              full.names = TRUE) %>%
+    read.csv(., row.names = 1) %>%
+    mutate(who = ifelse(origin == "Maternal", "Maternal", "Cord"),
+           plot_group = paste0(who, "_", status))
+  
+  for(this_who in c("Maternal", "Cord")){
+    
+    this_ef_df_who <- this_ef_df %>%
+      dplyr::filter(origin == this_who)
+    
+    this_metadata_who <- this_metadata %>%
+      dplyr::filter(Sample_ID %in% this_ef_df_who$Sample_ID)
+    
+    ft_samples <- this_ft_tbl %>%
+      as.data.frame() %>%
+      tibble::rownames_to_column("sample_name") %>%
+      dplyr::left_join(this_metadata_who %>% select(sample_name, Sample_ID), 
+                       by = "sample_name")
+    
+    # the single source of truth for which samples are usable, in a fixed order
+    common_ids <- this_ef_df_who$Sample_ID[this_ef_df_who$Sample_ID %in% ft_samples$Sample_ID]
+    
+    # filter + arrange BOTH dataframes off common_ids
+    other_ft_df <- ft_samples %>%
+      dplyr::filter(Sample_ID %in% common_ids) %>%
+      dplyr::arrange(match(Sample_ID, common_ids)) %>%
+      dplyr::select(-c(sample_name, Sample_ID))
+    
+    this_ef_df_who <- this_ef_df_who %>%
+      dplyr::filter(Sample_ID %in% common_ids) %>%
+      dplyr::arrange(match(Sample_ID, common_ids))
+    
+    stopifnot(nrow(other_ft_df) == nrow(this_ef_df_who))
+    stopifnot(identical(this_ef_df_who$Sample_ID, common_ids))  # extra safety check
+    
+    if(m == "RP_neg"){
+      other_ft_df <- other_ft_df %>%
+        dplyr::select(-efa_ft) 
+    }
+    
+    this_ef_df_who_ft <- this_ef_df_who %>% select(efa_ft)
+    
+    # correlations (vector)
+    cors <- cor(this_ef_df_who_ft, other_ft_df, use="pairwise.complete.obs")
+    
+    # sample size (pairwise complete obs)
+    n <- apply(cbind(this_ef_df_who_ft, other_ft_df), 2, function(col) sum(complete.cases(this_ef_df_who_ft, col)))[-1]
+    
+    # t-statistics
+    tvals <- cors * sqrt( (n - 2) / (1 - cors^2) )
+    
+    # two-sided p-values
+    pvals <- 2 * pt(-abs(tvals), df = n - 2)
+    
+    # corrected p-values
+    padj <- p.adjust(pvals, method = "BH")
+    
+    # results table
+    cor_results <- data.frame(
+      feature_id = colnames(cors),
+      correlation = cors[1,],
+      pvalue = pvals[1,],
+      pvalue_adjusted = padj
+    ) 
+    
+    all_kp <- glue::glue("{met_data_dir}/12_03_2025_empirical_compounds/{m}_empirical_compounds.csv") %>%
+      read.csv(., row.names = 1)
+    
+    cor_results_tbl <- cor_results %>%
+      dplyr::mutate(origin = this_who,
+                    mode = m) %>%
+      dplyr::left_join(., 
+                       all_kp %>%
+                         mutate(feature_id = rownames(all_kp)) %>%
+                         select(feature_id, mz, rtime),
+                       by = "feature_id")
+    
+    write_tsv(cor_results_tbl, 
+              glue::glue("{efv_supp_dir}{Sys.Date()}_{m}_{this_who}_efavirenz_correlations.tsv"))
+    
+    volcano_df <- read.csv(glue::glue("{volcano_dir}{results_date}_{m}_{group1}_{group2}_{this_who}_volcano_df.csv"))
+    
+    volcano_tbl <- volcano_df %>%
+      dplyr::select(feature_id, statistic, pvalue, 
+                    pvalue_adjusted, log2fc) %>%
+      dplyr::mutate(origin = this_who,
+                    mode = m) %>%
+      dplyr::left_join(., 
+                       all_kp %>%
+                         mutate(feature_id = rownames(all_kp)) %>%
+                         select(feature_id, mz, rtime),
+                       by = "feature_id")
+    
+    write_tsv(volcano_tbl, 
+              glue::glue("{efv_supp_dir}{Sys.Date()}_{m}_{this_who}_sig_diff_features.tsv"))
+    
+    both_df <- dplyr::bind_rows(cor_results %>%
+                                  dplyr::select(feature_id, pvalue_adjusted) %>%
+                                  dplyr::mutate(type = "Features correlated with Efavirenz in HEU"),
+                                volcano_df %>%
+                                  dplyr::select(feature_id, pvalue_adjusted) %>%
+                                  dplyr::mutate(type = "Features significantly different between HUU/HEU")) %>%
+      dplyr::mutate(significant = pvalue_adjusted < 0.05) %>%
+      dplyr::group_by(feature_id) %>%
+      dplyr::mutate(count = sum(significant, na.rm = TRUE)) %>%
+      dplyr::ungroup() %>%
+      dplyr::mutate(shape = (count == 2)) %>%
+      dplyr::left_join(., all_kp %>%
+                         mutate(feature_id = rownames(all_kp)) %>%
+                         select(feature_id, mz, rtime),
+                       by = "feature_id")
+    
+    efa_cors[[m]][[this_who]] <- both_df
+    
+    cat((sum(both_df$shape)/2), "features out of", nrow(cor_results), "found in both.")
+    
+    p_efz <- ggplot(both_df %>%
+                      dplyr::filter(rtime < 250) %>%
+                      dplyr::mutate(significant = factor(significant)),
+                    aes(y = -log10(pvalue_adjusted),
+                        x = rtime)) +
+      geom_point(aes(fill = significant,
+                     shape = significant), 
+                 size = 2.25,
+                 stroke = 0.2,
+                 alpha = 0.65) +
+      theme_minimal() +
+      scale_fill_manual(values = c("FALSE" = "darkgrey", "TRUE" = "#D41159"),
+                        guide = "none") +
+      scale_shape_manual(
+        values = c("FALSE" = 21, "TRUE" = 23),
+        guide = "none") +
+      theme(
+        text = element_text(family = "Arial"),
+        axis.text = element_text(size = 9),
+        axis.title.x = element_text(size = 9, margin = margin(t = 2.5)), # reduce space above x-axis title
+        axis.title.y = element_text(size = 9, margin = margin(r = 2.5)), # reduce space right of y-axis title
+        plot.title = element_text(size = 9.5, hjust = 0.5),
+        strip.text = element_text(size = 10, margin = margin(b = 2, t = 2)),
+        strip.background = element_rect(
+          fill = "grey90",     # background color
+          color = "black",     # border color
+          linewidth = 0.5      # border thickness
+        )) +
+      facet_wrap(. ~ type, nrow = 2, scales = "free_y") +
+      labs(
+        x = "Retention Time (seconds)",
+        y = "-log10 Adjusted p-value",
+        title = glue::glue("{this_who} ρ FDR < 0.01")
+      ) +
+      geom_hline(yintercept = -log10(0.01),
+                 linetype = "dashed")
+    
+    ggplot2::ggsave(glue::glue("{efa_dir}{Sys.Date()}_{m}_{this_who}_efavirenz_all_features_correlations.png"),
+                    width = 6.25,
+                    height = 3.5)
+    
+    # Save outputs for mummichog
+    cor_results_mummichog <- cor_results %>%
+      dplyr::left_join(., all_kp %>%
+                         mutate(feature_id = rownames(all_kp)) %>%
+                         select(feature_id, mz, rtime)) %>%
+      dplyr::select(mz, rtime, pvalue, correlation, feature_id) %>%
+      dplyr::rename('m/z' = "mz",
+                    "retention time" = "rtime",
+                    "p-value" = "pvalue",
+                    "statistic" = "correlation") %>%
       write_tsv(., 
-                glue::glue("{efa_dir}{Sys.Date()}_{m}_{this_who}_efavirenz_cor_mummichog_input.tsv"))
+                glue::glue("{mummichog_output_dir}{Sys.Date()}_{m}_{this_who}_efavirenz_cor_mummichog_input.tsv"))
+    
+  }
   
 }
 
@@ -2069,20 +2082,22 @@ for(this_who in c("Maternal", "Cord")){
 
 ```{r}
 
+efa_cors_rpneg <- efa_cors[["RP_neg"]]
+
 # Prepare data for the UpSet plot
-upset_df <- list(Efavirenz_Correlated_M = efa_cors$Maternal %>%
+upset_df <- list(Efavirenz_Correlated_M = efa_cors_rpneg$Maternal %>%
                    dplyr::filter(significant & 
-                                   type == "Features correlated with Efavirenz") %>%
+                                   type == "Features correlated with Efavirenz in HEU") %>%
                    pull(feature_id),
-                 HEU_Significant_M = efa_cors$Maternal %>%
+                 HEU_Significant_M = efa_cors_rpneg$Maternal %>%
                    dplyr::filter(significant & 
                                    type == "Features significantly different between HUU/HEU") %>%
                    pull(feature_id),
-                 Efavirenz_Correlated_C = efa_cors$Cord %>%
+                 Efavirenz_Correlated_C = efa_cors_rpneg$Cord %>%
                    dplyr::filter(significant & 
-                                   type == "Features correlated with Efavirenz") %>%
+                                   type == "Features correlated with Efavirenz in HEU") %>%
                    pull(feature_id),
-                 HEU_Significant_C = efa_cors$Cord %>%
+                 HEU_Significant_C = efa_cors_rpneg$Cord %>%
                    dplyr::filter(significant & 
                                    type == "Features significantly different between HUU/HEU") %>%
                    pull(feature_id))
