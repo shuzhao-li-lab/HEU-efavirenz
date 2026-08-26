@@ -24,7 +24,10 @@ All steps are described under `notebooks/`, using shell or R scripts, notebooks 
 │   ├── 05_2026-05-22_building_ms2_library.R
 │   └── 06_2026-05-26_combining_heu_annotations.R
 └── 02_heu_metabolomics_analysis
-    └── 01_2025-12-10_HEU_Metabolomics_Analysis.qmd
+    ├── 01_2025-12-10_HEU_Metabolomics_Analysis.qmd
+    ├── 02_2026-08-25_Running_Mummichog.ipynb
+    ├── 03_2026-08-25_HEU_Mummichog_Plots.qmd
+    └── 04_plot_overlap_Fig2g.ipynb
 ```
 
 ## Data Availability: 	

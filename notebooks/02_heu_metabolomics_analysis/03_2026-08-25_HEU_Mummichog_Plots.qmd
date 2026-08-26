@@ -5,8 +5,9 @@ editor: visual
 ---
 
 ```{r}
+library(tidyverse)
 
-mummi_results <- "/Volumes/T7/Li Lab/Projects/HEU/for_github/metab_notebooks/02_heu_metabolomics_analysis/2026-08-12_results/mummichog_inputs/"
+mummi_results <- "mummichog_inputs/"
 
 mum_output_dir <- glue::glue("{mummi_results}mummichog_plots/")
 dir.create(mum_output_dir)
@@ -16,18 +17,20 @@ mummichog_results <- list.files(path = mummi_results,
                                 pattern = "mcg_pathwayanalysis_mcg_.*\\.xlsx$",
                                 full.names = TRUE) 
 
-modes <- c("HILIC_neg", "HILIC_pos", "RP_neg", "RP_pos") 
+modes <- c("HILIC_neg", "RP_neg") 
 
 for(m in modes){
   
   mummichog_results_m <- mummichog_results[str_detect(mummichog_results, m)] %>%
     map_dfr(~ readxl::read_excel(.x) %>%
               mutate(source_file = basename(.x))) %>%
+    
     dplyr::bind_rows() %>%
     dplyr::rename(pvalue = 'p-value') %>%
     group_by(source_file) %>%  
     mutate(p_adj = p.adjust(pvalue, method = "BH")) %>%
     ungroup() %>%
+    dplyr::filter(pathway_size > 1) %>%
     dplyr::select(pathway, pvalue, p_adj, source_file) %>%
     dplyr::mutate(test = ifelse(grepl("efv_corr", source_file), "EFV_Cor", "HEU_HUU"),
                   who = ifelse(grepl("mothers", source_file), "Maternal", "Cord"),
@@ -36,7 +39,7 @@ for(m in modes){
                                  levels = c("Cord\nEFV_Cor", "Cord\nHEU_HUU", 
                                             "Maternal\nEFV_Cor", "Maternal\nHEU_HUU"))) %>%
     group_by(pathway) %>%
-    filter(any(pvalue < 0.05, na.rm = TRUE)) %>%
+    filter(any(pvalue < 0.01, na.rm = TRUE)) %>%
     ungroup() %>%
     mutate(logq = -log10(pvalue),
            is_sig = factor(pvalue < 0.05),
@@ -72,7 +75,7 @@ for(m in modes){
   
   ggplot2::ggsave(glue::glue("{mum_output_dir}{Sys.Date()}_{m}_mummichog_results_plot_rawp.png"),
                   width = 8,
-                  height = 7)
+                  height = 3)
 }
 
 ```
